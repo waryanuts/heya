@@ -28634,10 +28634,14 @@ end
                                     if detected_class then break end
                                 end
 
+                                local profile_url = string.format("https://www.roblox.com/users/%d/profile", player.UserId)
+                                local linked_player_name = string.format("[%s](%s)", player.Name, profile_url)
+
                                 if detected_class then
-                                    table.insert(player_names, string.format("%s (%s)", player.Name, detected_class))
+                                    -- Only the Roblox username is hyperlinked; the class stays plain text.
+                                    table.insert(player_names, string.format("%s (%s)", linked_player_name, detected_class))
                                 else
-                                    table.insert(player_names, player.Name)
+                                    table.insert(player_names, linked_player_name)
                                 end
                             end
 
