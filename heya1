@@ -7526,18 +7526,55 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
                     end
 
+                    local dayfarm_dangerous_tools = {
+                        ["Perflora"] = math.huge,
+                        ["Opal Shard"] = 1200,
+                        ["Fimbulvetr"] = 650,
+                        ["Manus Dei"] = 650,
+                        ["Telorum"] = 650,
+                        ["Pebble"] = 650,
+                        ["Vulnere"] = 500,
+                        ["Celeritas"] = 500,
+                    }
+
+                    local function dayfarm_dangerous_tool_in_range(tool_name, owner_player)
+                        local max_distance = dayfarm_dangerous_tools[tool_name]
+                        if not max_distance or not owner_player or owner_player == plr then
+                            return false, nil
+                        end
+
+                        if max_distance == math.huge then
+                            return true, nil
+                        end
+
+                        local local_character = plr.Character
+                        local other_character = owner_player.Character
+                        local local_root = local_character and FindFirstChild(local_character, "HumanoidRootPart")
+                        local other_root = other_character and FindFirstChild(other_character, "HumanoidRootPart")
+                        if not local_root or not other_root then
+                            return false, nil
+                        end
+
+                        local distance = (other_root.Position - local_root.Position).Magnitude
+                        return distance <= max_distance, distance
+                    end
+
                     shared.dangerousItemConnection = utility:Connection(ws.Live.DescendantAdded, function(descendant)
                         if not (Toggles and Toggles.day_farm and Toggles.day_farm.Value) then return end
                         if no_kick() then return end
+                        if not descendant:IsA("Tool") or not dayfarm_dangerous_tools[descendant.Name] then return end
 
-                        if descendant:IsA("Tool") and (descendant.Name == "Perflora" or descendant.Name == "Pebble" or descendant.Name == "Celeritas") then
-                            local character = descendant.Parent
-                            if character and character:IsA("Model") then
-                                local player = plrs:GetPlayerFromCharacter(character)
-                                if player and player ~= plr then
-                                    DayfarmServerhop(string.format("%s (%s) has dangerous item: %s", player.Name, player.UserId, descendant.Name))
-                                end
-                            end
+                        -- Equipped tools are direct children of the player's Character.
+                        local character = descendant.Parent
+                        if not character or not character:IsA("Model") then return end
+
+                        local player = plrs:GetPlayerFromCharacter(character)
+                        if not player or player == plr or descendant.Parent ~= player.Character then return end
+
+                        local should_trigger, distance = dayfarm_dangerous_tool_in_range(descendant.Name, player)
+                        if should_trigger then
+                            local distance_text = distance and string.format(" (%.0f studs away)", distance) or ""
+                            DayfarmServerhop(string.format("%s (%s) has equipped dangerous item: %s%s", player.Name, player.UserId, descendant.Name, distance_text))
                         end
                     end)
 
@@ -7545,9 +7582,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         for _, other_player in next, plrs:GetPlayers() do
                             if other_player ~= plr and other_player.Character then
                                 for _, tool in next, other_player.Character:GetChildren() do
-                                    if tool:IsA("Tool") and (tool.Name == "Perflora" or tool.Name == "Pebble" or tool.Name == "Celeritas") then
-                                        DayfarmServerhop(string.format("%s (%s) already has dangerous item: %s", other_player.Name, other_player.UserId, tool.Name))
-                                        return
+                                    if tool:IsA("Tool") and dayfarm_dangerous_tools[tool.Name] and tool.Parent == other_player.Character then
+                                        local should_trigger, distance = dayfarm_dangerous_tool_in_range(tool.Name, other_player)
+                                        if should_trigger then
+                                            local distance_text = distance and string.format(" (%.0f studs away)", distance) or ""
+                                            DayfarmServerhop(string.format("%s (%s) already has equipped dangerous item: %s%s", other_player.Name, other_player.UserId, tool.Name, distance_text))
+                                            return
+                                        end
                                     end
                                 end
                             end
@@ -16424,19 +16465,25 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 local emergency_serverhop_connection
                 local emergency_conditions = Options.EmergencyServerhopConditions and Options.EmergencyServerhopConditions.Value or {}
-                local ranged_emergency_items = {
-                    ["Fimbulvetr"] = 700,
-                    ["Manus Dei"] = 700,
+                local emergency_item_ranges = {
+                    ["Perflora"] = math.huge,
+                    ["Opal Shard"] = 1200,
+                    ["Fimbulvetr"] = 650,
+                    ["Manus Dei"] = 650,
+                    ["Telorum"] = 650,
+                    ["Pebble"] = 650,
+                    ["Vulnere"] = 500,
+                    ["Celeritas"] = 500,
                 }
 
                 local function get_emergency_item_distance(tool_name, owner_player)
-                    local max_distance = ranged_emergency_items[tool_name]
-                    if not max_distance then
-                        return true, nil
+                    local max_distance = emergency_item_ranges[tool_name]
+                    if not max_distance or not owner_player or owner_player == plr then
+                        return false, nil
                     end
 
-                    if not owner_player or owner_player == plr then
-                        return false, nil
+                    if max_distance == math.huge then
+                        return true, nil
                     end
 
                     local local_character = plr.Character
@@ -16457,7 +16504,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         for _, other_player in next, plrs:GetPlayers() do
                             if other_player ~= plr and other_player.Character then
                                 for _, tool in next, other_player.Character:GetChildren() do
-                                    if tool:IsA("Tool") and emergency_conditions[tool.Name] then
+                                    if tool:IsA("Tool") and emergency_conditions[tool.Name] and emergency_item_ranges[tool.Name] and tool.Parent == other_player.Character then
                                         local should_trigger, distance = get_emergency_item_distance(tool.Name, other_player)
                                         if should_trigger then
                                             local distance_text = distance and string.format(" (%.0f studs away)", distance) or ""
@@ -16477,30 +16524,20 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
                         if stay_in_server then return end
 
-                        if descendant:IsA("Tool") and emergency_conditions[descendant.Name] then
-                            local owner_player = nil
-                            local ancestor = descendant.Parent
+                        if descendant:IsA("Tool") and emergency_conditions[descendant.Name] and emergency_item_ranges[descendant.Name] then
+                            -- Only trigger for an actually equipped tool (direct child of a player Character).
+                            local character = descendant.Parent
+                            if not character or not character:IsA("Model") then return end
 
-                            while ancestor and ancestor ~= ws.Live do
-                                if ancestor:IsA("Model") then
-                                    owner_player = plrs:GetPlayerFromCharacter(ancestor)
-                                    if owner_player then break end
-                                end
-                                ancestor = ancestor.Parent
-                            end
+                            local owner_player = plrs:GetPlayerFromCharacter(character)
+                            if not owner_player or owner_player == plr or descendant.Parent ~= owner_player.Character then return end
 
-                            if owner_player and owner_player ~= plr then
-                                local should_trigger, distance = get_emergency_item_distance(descendant.Name, owner_player)
-                                if should_trigger then
-                                    local distance_text = distance and string.format(" (%.0f studs away)", distance) or ""
-                                    library:Notify(string.format("Player %s has %s%s - instant serverhop!", owner_player.Name, descendant.Name, distance_text))
-                                    trinket_bot.path_running = false
-                                    TrinketBotServerhop(string.format("Player %s (%s) has dangerous item: %s%s - instant serverhop", owner_player.Name, owner_player.UserId, descendant.Name, distance_text))
-                                end
-                            elseif not owner_player and not ranged_emergency_items[descendant.Name] then
-                                library:Notify(string.format("Dangerous item %s detected in server - instant serverhop!", descendant.Name))
+                            local should_trigger, distance = get_emergency_item_distance(descendant.Name, owner_player)
+                            if should_trigger then
+                                local distance_text = distance and string.format(" (%.0f studs away)", distance) or ""
+                                library:Notify(string.format("Player %s has equipped %s%s - instant serverhop!", owner_player.Name, descendant.Name, distance_text))
                                 trinket_bot.path_running = false
-                                TrinketBotServerhop(string.format("Dangerous item %s detected in server - instant serverhop (no owner identified)", descendant.Name))
+                                TrinketBotServerhop(string.format("Player %s (%s) has equipped dangerous item: %s%s - instant serverhop", owner_player.Name, owner_player.UserId, descendant.Name, distance_text))
                             end
                         end
                     end))
@@ -19133,8 +19170,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             group_trinket_bot:AddDropdown("EmergencyServerhopConditions", {
                 Text = "Emergency Serverhop Conditions",
-                Tooltip = "Selected items trigger when equipped; Fimbulvetr/Manus Dei only trigger within 700 studs",
-                Values = {"Perflora", "Pebble", "Celeritas", "Opal Shard", "Fimbulvetr", "Manus Dei"},
+                Tooltip = "Equipped only: Perflora = infinite; Opal Shard = 1200; Fimbulvetr/Manus Dei/Telorum/Pebble = 650; Vulnere/Celeritas = 500 studs",
+                Values = {"Perflora", "Opal Shard", "Fimbulvetr", "Manus Dei", "Telorum", "Pebble", "Vulnere", "Celeritas"},
                 Multi = true,
                 Default = {"Perflora", "Pebble", "Celeritas"},
                 Compact = true
