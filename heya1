@@ -28454,6 +28454,7 @@ end
                                 {position = Vector3.new(626.428, 66.71, -4536.125), radius = 44, name = "The Corpse", image = "https://i.imgur.com/cXowTys.png"},
                                 {position = Vector3.new(678, 109.21, -4627.316), radius = 66, name = "The Shelves", image = "https://i.imgur.com/D98jA86.png"},
                                 {position = Vector3.new(2111.855, 152.863, -1894.622), radius = 33, name = "Ruins #7", image = "https://i.imgur.com/g89wi2o.png"},
+                                {position = Vector3.new(-1204.323, 326.691, 692.212), radius = 33, name = "Desert Mist", image = "https://i.imgur.com/U7sLdjN.png"},
 
 
 
