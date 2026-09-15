@@ -7532,7 +7532,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         ["Fimbulvetr"] = 650,
                         ["Manus Dei"] = 650,
                         ["Telorum"] = 650,
-                        ["Pebble"] = 650,
+                        ["Pebble"] = 900,
                         ["Vulnere"] = 500,
                         ["Celeritas"] = 500,
                     }
@@ -28400,7 +28400,7 @@ end
                                 {position = Vector3.new(630.73, 3761.39, -55.3), radius = 122, name = "Room Above Gate ", image = "https://i.imgur.com/4zwi2Zy.png"},
                                 {position = Vector3.new(544.98, 3636.39, -158.3), radius = 77, name = "Room Below Skycastle", image = "https://i.imgur.com/N6WsK3q.png"},
                                 {position = Vector3.new(729.379, 3694.39, -12.575), radius = 77, name = "The Tip of Skycastle", image = "https://i.imgur.com/FC0ZmkR.png"},
-                                {position = Vector3.new(372, 3777.64, -7), radius = 66, name = "Under a Starry Night", image = "https://i.imgur.com/SExE3Qx.png"},
+                                {position = Vector3.new(372, 3777.64, -7), radius = 66, name = "Under a Starry Night", image = "https://i.imgur.com/bGgrwJO.png"},
                                 {position = Vector3.new(5790.538, 1431.794, 860.062), radius = 77, name = "Top of Snail", image = "https://i.imgur.com/ps4dA0s.png"},
                                 {position = Vector3.new(4003, 443.794, -1017), radius = 160, name = "Snake Pit", image = "https://i.imgur.com/SlWbHjP.png"},
                                 {position = Vector3.new(3208.855, 124.868, -2453.623), radius = 15, name = "Behind Crates", image = "https://i.imgur.com/2XATSr3.png"},
