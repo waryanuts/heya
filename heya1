@@ -28659,12 +28659,9 @@ end
                             end
 
                             local artifact_position = first_object.Position
-                            description = description .. string.format("**Server:** `%s (%s)`\n**Position:** `%.3f, %.3f, %.3f`\n\n",
+                            description = description .. string.format("**Server:** `%s (%s)`\n\n",
                                 server_name ~= "" and server_name or "Unknown",
-                                server_region ~= "" and server_region or "Unknown",
-                                artifact_position.X,
-                                artifact_position.Y,
-                                artifact_position.Z
+                                server_region ~= "" and server_region or "Unknown"
                             )
 
                             -- Keep the player list as the final description section so the embed image renders directly below it.
@@ -28672,14 +28669,15 @@ end
                             description = description .. string.format("> Sunken: %s\n", get_last_looted("deepsunken"))
                             description = description .. string.format("> Temple of Fire: %s\n\n", get_last_looted("temple"))
 
-                            description = description .. "**Players in Server:**\n" .. ( #player_names > 0 and table.concat(player_names, "\n") or "None" )
+                            description = description .. string.format("**Players in Server: (%d/23)**\n", player_count) .. ( #player_names > 0 and table.concat(player_names, "\n") or "None" )
 
-                            local footer_text
-                            if cheat_client.config.webhook_show_username ~= false then
-                                footer_text = string.format("Players: %d/23 | %s | Job: %s", player_count, plr.Name, game.JobId)
-                            else
-                                footer_text = string.format("Players: %d/23 | Job: %s", player_count, game.JobId)
-                            end
+                            local footer_text = string.format(
+                                "Job ID: %s | Position: %.3f, %.3f, %.3f",
+                                game.JobId,
+                                artifact_position.X,
+                                artifact_position.Y,
+                                artifact_position.Z
+                            )
 
                             local embed = {
                                 title = string.format("%s%s | ARTIFACT FOUND", artifact_list, area_text),
@@ -28776,7 +28774,7 @@ end
                                         url = artifact_location_image
                                     } or nil,
                                     footer = {
-                                        text = string.format("Players: %d/23 | Job: %s", player_count, game.JobId)
+                                        text = footer_text
                                     },
                                     timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
                                 }
@@ -28810,7 +28808,7 @@ end
                                             url = artifact_location_image
                                         } or nil,
                                         footer = {
-                                            text = string.format("Players: %d/23 | %s | Job: %s", player_count, plr.Name, game.JobId)
+                                            text = footer_text
                                         },
                                         timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
                                     }
