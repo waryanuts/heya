@@ -28455,6 +28455,7 @@ end
                                 {position = Vector3.new(678, 109.21, -4627.316), radius = 66, name = "The Shelves", image = "https://i.imgur.com/D98jA86.png"},
                                 {position = Vector3.new(2111.855, 152.863, -1894.622), radius = 33, name = "Ruins #7", image = "https://i.imgur.com/g89wi2o.png"},
                                 {position = Vector3.new(-1204.323, 326.691, 692.212), radius = 33, name = "Desert Mist", image = "https://i.imgur.com/U7sLdjN.png"},
+                                {position = Vector3.new(1273.000, 196.100, 808.800), radius = 44, name = "Super Illu Armor", image = "https://i.imgur.com/WSLgn2X.png"},
 
 
 
