@@ -503,6 +503,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             player_observe = false,
             player_racial = true,
             player_range = 2000,
+            rift_dive_visualizer = false,
 
             player_chams = false,
             player_friendly_chams = false,
@@ -4220,6 +4221,27 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             do
                 local trash_executor = identifyexecutor and identifyexecutor():lower():find("hydrogen") or identifyexecutor():lower():find("zenith")
 
+                local function is_rift_dive_active()
+                    local character = plr.Character
+                    local boosts = character and FindFirstChild(character, "Boosts")
+                    if not boosts then
+                        return false
+                    end
+
+                    -- Rift Dive is active while ANY live SpeedLock value is 40 or higher.
+                    -- Scan every child because Rogue can have multiple values named SpeedLock.
+                    for _, speedLock in ipairs(boosts:GetChildren()) do
+                        if speedLock.Name == "SpeedLock"
+                            and (speedLock:IsA("NumberValue") or speedLock:IsA("IntValue"))
+                            and speedLock.Value >= 40
+                        then
+                            return true
+                        end
+                    end
+
+                    return false
+                end
+
                 cheat_client.calculate_player_bounding_box = LPH_NO_VIRTUALIZE(function(self, character)
                     if character and FindFirstChild(character, "HumanoidRootPart") then
                         local character_cframe = character.HumanoidRootPart.CFrame
@@ -4436,19 +4458,21 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
 
                         local player_chams_enabled = shared and Toggles and Toggles.PlayerChams and Toggles.PlayerChams.Value
-                        if not player_chams_enabled then
+                        local rift_dive_visualizer = shared and Toggles and Toggles.RiftDiveVisualizer and Toggles.RiftDiveVisualizer.Value
+                        if not (player_chams_enabled or rift_dive_visualizer) then
                             esp.highlight.Adornee = nil
                             esp.highlight.Enabled = false
                             esp.highlight.Parent = nil
                             return
                         end
 
-                        local player_friendly_chams = shared and Toggles and Toggles.PlayerFriendlyChams and Toggles.PlayerFriendlyChams.Value
-                        local player_low_health = shared and Toggles and Toggles.PlayerLowHealth and Toggles.PlayerLowHealth.Value
-                        local player_aimbot_chams = shared and Toggles and Toggles.PlayerAimbotChams and Toggles.PlayerAimbotChams.Value
-                        local player_racial_chams = shared and Toggles and Toggles.PlayerRacialChams and Toggles.PlayerRacialChams.Value
+                        -- Normal cham modes still require Player Highlights. Rift Dive Visualizer is standalone.
+                        local player_friendly_chams = player_chams_enabled and Toggles.PlayerFriendlyChams and Toggles.PlayerFriendlyChams.Value
+                        local player_low_health = player_chams_enabled and Toggles.PlayerLowHealth and Toggles.PlayerLowHealth.Value
+                        local player_aimbot_chams = player_chams_enabled and Toggles.PlayerAimbotChams and Toggles.PlayerAimbotChams.Value
+                        local player_racial_chams = player_chams_enabled and Toggles.PlayerRacialChams and Toggles.PlayerRacialChams.Value
 
-                        if not (player_friendly_chams or player_low_health or player_aimbot_chams or player_racial_chams) then
+                        if not (rift_dive_visualizer or player_friendly_chams or player_low_health or player_aimbot_chams or player_racial_chams) then
                             esp.highlight.Adornee = nil
                             esp.highlight.Enabled = false
                             esp.highlight.Parent = nil
@@ -4505,10 +4529,18 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 local has_kenhaki = esp.cached_parts.kenhaki ~= nil
                                 local has_counterspell = esp.cached_parts.counterspell ~= nil
                                 local is_aimbot_target = cheat_client.aimbot and cheat_client.aimbot.current_target == esp.player
-                                local should_highlight = (player_friendly_chams and is_friendly) or (is_aimbot_target and player_aimbot_chams) or (player_low_health and current_health < 66) or (has_kenhaki and player_racial_chams) or (has_counterspell and player_racial_chams)
+
+                                -- While the local player is in Rift Dive, any target with at least one
+                                -- ParryCool instance gets the same red styling as Low Health Chams.
+                                local rift_dive_active = rift_dive_visualizer and is_rift_dive_active()
+                                local has_parry_cool = rift_dive_active and FindFirstChild(character, "ParryCool") ~= nil
+                                local should_highlight = has_parry_cool or (player_friendly_chams and is_friendly) or (is_aimbot_target and player_aimbot_chams) or (player_low_health and current_health < 66) or (has_kenhaki and player_racial_chams) or (has_counterspell and player_racial_chams)
 
                                 if should_highlight then
-                                    if is_friendly and player_friendly_chams then
+                                    if has_parry_cool then
+                                        esp.highlight.FillColor = Color3.fromRGB(255, 0, 0)
+                                        esp.highlight.OutlineColor = Color3.fromRGB(255, 0, 0)
+                                    elseif is_friendly and player_friendly_chams then
                                         esp.highlight.FillColor = Color3.fromRGB(0, 255, 0)
                                         esp.highlight.OutlineColor = Color3.fromRGB(0, 255, 0)
                                     elseif is_aimbot_target and player_aimbot_chams then
@@ -5834,6 +5866,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
 
                 local function is_any_chams_enabled()
+                    local rift_dive_visualizer = Toggles and Toggles.RiftDiveVisualizer and Toggles.RiftDiveVisualizer.Value
+                    if rift_dive_visualizer then
+                        return true
+                    end
+
                     if not (Toggles and Toggles.PlayerChams and Toggles.PlayerChams.Value) then
                         return false
                     end
@@ -8393,10 +8430,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         cheat_client.esp_rendering.stop_player_esp()
 
                         local chams_enabled = Toggles and Toggles.PlayerChams and Toggles.PlayerChams.Value
-                        local esp_still_needed = chams_enabled and ((Toggles and Toggles.PlayerAimbotChams and Toggles.PlayerAimbotChams.Value) or
+                        local rift_dive_visualizer = Toggles and Toggles.RiftDiveVisualizer and Toggles.RiftDiveVisualizer.Value
+                        local esp_still_needed = rift_dive_visualizer or (chams_enabled and ((Toggles and Toggles.PlayerAimbotChams and Toggles.PlayerAimbotChams.Value) or
                                                   (Toggles and Toggles.PlayerFriendlyChams and Toggles.PlayerFriendlyChams.Value) or
                                                   (Toggles and Toggles.PlayerLowHealth and Toggles.PlayerLowHealth.Value) or
-                                                  (Toggles and Toggles.PlayerRacialChams and Toggles.PlayerRacialChams.Value))
+                                                  (Toggles and Toggles.PlayerRacialChams and Toggles.PlayerRacialChams.Value)))
 
                         if not esp_still_needed then
                             for player, esp in pairs(cheat_client.player_esp_objects or {}) do
@@ -8413,6 +8451,17 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 Options.PlayerEspKeybind:OnChanged(function()
                     cheat_client.config.player_esp_keybind = Options.PlayerEspKeybind.Value
+                end)
+
+                group_player:AddToggle("RiftDiveVisualizer", {
+                    Text = "Rift Dive Visualizer",
+                    Tooltip = "During Rift Dive (local SpeedLock >= 40), highlight players with ParryCool using the Low Health Chams style.",
+                    Default = cheat_client.config.rift_dive_visualizer
+                })
+
+                Toggles.RiftDiveVisualizer:OnChanged(function()
+                    cheat_client.config.rift_dive_visualizer = Toggles.RiftDiveVisualizer.Value
+                    cheat_client.esp_rendering.update_chams()
                 end)
 
                 group_player:AddToggle("PlayerName", {
@@ -25377,8 +25426,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                          (Toggles and Toggles.PlayerFriendlyChams and Toggles.PlayerFriendlyChams.Value) or
                                          (Toggles and Toggles.PlayerLowHealth and Toggles.PlayerLowHealth.Value) or
                                          (Toggles and Toggles.PlayerRacialChams and Toggles.PlayerRacialChams.Value)
+                    local rift_dive_visualizer = Toggles and Toggles.RiftDiveVisualizer and Toggles.RiftDiveVisualizer.Value
 
-                    if esp_enabled or chams_enabled then
+                    if esp_enabled or chams_enabled or rift_dive_visualizer then
                         cheat_client.player_esp_objects[player] = cheat_client:add_player_esp(player)
                     end
                 end
