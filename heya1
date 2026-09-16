@@ -504,6 +504,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             player_racial = true,
             player_range = 2000,
             rift_dive_visualizer = false,
+            cooldown_visualizer = false,
 
             player_chams = false,
             player_friendly_chams = false,
@@ -7995,6 +7996,1412 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         end
     end
     
+    --[[
+        Cooldown Visualizer
+
+        Kept inside its own function scope so its helper locals do not consume
+        registers from the already very large main Hydroxide function.
+
+        Normal moves can stay as one short row:
+        Move Name | Animation ID | Animation Window | Cooldown Time
+
+        Special moves can use a keyed table when they need extra conditions.
+    ]]
+    cheat_client.cooldown_visualizer = (function()
+        local moves = {
+            {"Wrathful Leap", "122649765707672", 0.164, 11.75},
+
+            -- Abyssal Scream: both the animation AND a newly-added NoAttack
+            -- Accessory must be seen within 0.150s of the activation remote.
+            -- Either signal may arrive first; the cooldown starts only after both.
+            {
+                name = "Abyssal Scream",
+                animation_id = "78577653668852",
+                animation_window = 0.150,
+                cooldown_time = 15.8,
+
+                special = "instance_and_animation",
+                required_instance_name = "NoAttack",
+                required_instance_class = "Accessory",
+                required_instance_window = 0.150,
+            },
+
+            -- Rift Dive:
+            -- 1) Start animation confirms that the move was actually used.
+            -- 2) If SpeedLock is NOT added within 1.25s, use the normal 29s cooldown
+            --    measured from the original activation time.
+            -- 3) If SpeedLock IS added within 1.25s, wait for the Emerge sound.
+            --    Merely adding/recreating the Sound does NOT count. Its actual
+            --    playback must begin within 10s of activation, then start a fresh
+            --    30s cooldown from that playback (the actual end of Rift Dive).
+            -- 4) If Emerge never actually plays inside that 10s window, fall back to the
+            --    normal 29s cooldown measured from the original activation time.
+            {
+                name = "Rift Dive",
+                animation_id = "85937800819817",
+                animation_window = 0.140,
+                cooldown_time = 27,
+
+                special = "rift_dive",
+                speedlock_window = 1.25,
+                emerge_window = 10,
+                emerge_cooldown = 27,
+            },
+        }
+
+        local profiles = {}
+        local animations = {}
+        local states = {}
+        local animation_connection = nil
+        local descendant_connection = nil
+
+        for _, row in ipairs(moves) do
+            local profile
+
+            if row.name then
+                profile = {
+                    name = row.name,
+                    animation_id = tostring(row.animation_id),
+                    animation_window = tonumber(row.animation_window) or 0,
+                    cooldown_time = tonumber(row.cooldown_time) or 0,
+
+                    special = row.special,
+                    speedlock_window = tonumber(row.speedlock_window),
+                    emerge_window = tonumber(row.emerge_window),
+                    emerge_cooldown = tonumber(row.emerge_cooldown),
+
+                    required_instance_name = row.required_instance_name,
+                    required_instance_class = row.required_instance_class,
+                    required_instance_window = tonumber(row.required_instance_window),
+
+                    -- Special moves are treated as a state machine. Once their
+                    -- confirmed use is waiting on an end/resolution signal, simply
+                    -- re-equipping/selecting the tool must NOT open another use.
+                    -- Future special moves inherit this protection by default.
+                    -- Set block_retrigger_while_special = false on a profile only
+                    -- if that move is genuinely allowed to start again mid-resolution.
+                    block_retrigger_while_special = row.block_retrigger_while_special ~= false,
+                }
+            else
+                profile = {
+                    name = row[1],
+                    animation_id = tostring(row[2]),
+                    animation_window = tonumber(row[3]) or 0,
+                    cooldown_time = tonumber(row[4]) or 0,
+                }
+            end
+
+            profiles[profile.name] = profile
+            animations[profile.animation_id] = animations[profile.animation_id] or {}
+            table.insert(animations[profile.animation_id], profile)
+
+            states[profile.name] = {
+                pending_at = nil,
+                pending_button = nil,
+                pending_token = 0,
+
+                overlay = nil,
+                tween = nil,
+
+                special_active = false,
+                special_started_at = nil,
+                special_button = nil,
+                special_token = 0,
+                speedlock_seen = false,
+                speedlock_baseline = nil,
+
+                -- Emerge can be created/recreated simply by re-equipping Rift Dive.
+                -- Track Sound playback connections separately so instance creation alone
+                -- can never resolve the special move.
+                emerge_connections = {},
+                emerge_watched = setmetatable({}, {__mode = "k"}),
+
+                -- Capture SpeedLock additions from the instant LeftClick fires,
+                -- even if they happen before the confirmation animation callback.
+                pending_speedlock_seen = false,
+                pending_speedlock_baseline = nil,
+
+                -- Generic two-signal confirmation state. Used by moves such as
+                -- Abyssal Scream that require both an animation and an instance.
+                pending_required_instance_seen = false,
+                pending_animation_seen = false,
+
+                -- A special move stays locked against re-triggering while its
+                -- original confirmation animation is still running. This protects
+                -- against tools that emit equip/LeftClick noise when reselected.
+                move_in_progress = false,
+                move_track_token = 0,
+            }
+        end
+
+        local function clean_animation_id(animation_id)
+            return tostring(animation_id):match("%d+") or ""
+        end
+
+        local function find_hotbar_button(move_name)
+            local player_gui = plr:FindFirstChild("PlayerGui")
+            local backpack_gui = player_gui and FindFirstChild(player_gui, "BackpackGui")
+            local main_frame = backpack_gui and FindFirstChild(backpack_gui, "MainFrame")
+            if not main_frame then
+                return nil
+            end
+
+            for _, object in ipairs(main_frame:GetChildren()) do
+                local displayed_move_name = object.Name:match("^%d+(.+)$")
+                if displayed_move_name == move_name then
+                    return object
+                end
+            end
+
+            return nil
+        end
+
+        local function get_equipped_profile()
+            local character = plr.Character
+            if not character then
+                return nil
+            end
+
+            for _, object in ipairs(character:GetChildren()) do
+                if object:IsA("Tool") then
+                    local profile = profiles[object.Name]
+                    if profile then
+                        return profile
+                    end
+                end
+            end
+
+            return nil
+        end
+
+
+        -- Snap Cooldowns share one cooldown pool and are confirmed from RightClick
+        -- instead of the normal move LeftClick path. Their indicator uses a lighter
+        -- blue based on the Mana Overlay Snap color.
+        local snap_system = (function()
+            local snap_profiles = {
+                Gelidus = {
+                    name = "Gelidus",
+                    special = "gelidus_remove",
+                    shared_cooldown = 3.3,
+                    trigger_instance = "GeliFreezing",
+                },
+
+                Gate = {
+                    name = "Gate",
+                    special = "gate_nofall",
+                    active_cast_instance = "ActiveCast",
+                    nofall_instance = "NoFall",
+                    gate_timer = 8.4,
+                    nofall_cooldown = 7.15,
+                },
+            }
+
+            local SNAP_OVERLAY_NAME = "SnapCooldownVisualizerOverlay"
+            local SNAP_COLOR = Color3.fromRGB(80, 140, 255)
+            local SNAP_TRANSPARENCY = 0.45
+
+            local snap_state = {
+                pending_name = nil,
+                pending_at = nil,
+                pending_token = 0,
+                baseline = nil,
+
+                geli_instance = nil,
+                geli_connection = nil,
+
+                gate_activecast_seen = false,
+                gate_activecast_at = nil,
+                gate_activecast_instance = nil,
+                gate_activecast_connection = nil,
+                gate_nofall_seen = false,
+                gate_nofall_seen_at = nil,
+
+                shared_token = 0,
+                shared_end_at = 0,
+                shared_duration = 0,
+                shared_overlays = setmetatable({}, {__mode = "k"}),
+                shared_tweens = setmetatable({}, {__mode = "k"}),
+            }
+
+            local function disconnect_geli_connection()
+                if snap_state.geli_connection then
+                    pcall(function()
+                        snap_state.geli_connection:Disconnect()
+                    end)
+                    snap_state.geli_connection = nil
+                end
+                snap_state.geli_instance = nil
+            end
+
+            local function disconnect_gate_activecast_connection()
+                if snap_state.gate_activecast_connection then
+                    pcall(function()
+                        snap_state.gate_activecast_connection:Disconnect()
+                    end)
+                    snap_state.gate_activecast_connection = nil
+                end
+                snap_state.gate_activecast_instance = nil
+            end
+
+            local function clear_pending()
+                disconnect_geli_connection()
+                disconnect_gate_activecast_connection()
+
+                snap_state.pending_token += 1
+                snap_state.pending_name = nil
+                snap_state.pending_at = nil
+                snap_state.baseline = nil
+
+                snap_state.gate_activecast_seen = false
+                snap_state.gate_activecast_at = nil
+                snap_state.gate_activecast_instance = nil
+                snap_state.gate_nofall_seen = false
+                snap_state.gate_nofall_seen_at = nil
+            end
+
+            local function destroy_shared_visuals()
+                for button, tween in pairs(snap_state.shared_tweens) do
+                    if tween then
+                        pcall(function()
+                            tween:Cancel()
+                        end)
+                    end
+                    snap_state.shared_tweens[button] = nil
+                end
+
+                for button, overlay in pairs(snap_state.shared_overlays) do
+                    if overlay then
+                        pcall(function()
+                            overlay:Destroy()
+                        end)
+                    end
+                    snap_state.shared_overlays[button] = nil
+                end
+
+                local player_gui = plr:FindFirstChild("PlayerGui")
+                local backpack_gui = player_gui and FindFirstChild(player_gui, "BackpackGui")
+                local main_frame = backpack_gui and FindFirstChild(backpack_gui, "MainFrame")
+
+                if main_frame then
+                    for _, object in ipairs(main_frame:GetChildren()) do
+                        local overlay = FindFirstChild(object, SNAP_OVERLAY_NAME)
+                        if overlay then
+                            overlay:Destroy()
+                        end
+                    end
+                end
+            end
+
+            local function create_shared_overlay(button, total_duration, remaining, token)
+                if not button or not button.Parent or remaining <= 0 or total_duration <= 0 then
+                    return
+                end
+
+                local existing = FindFirstChild(button, SNAP_OVERLAY_NAME)
+                if existing then
+                    return
+                end
+
+                local ratio = math.clamp(remaining / total_duration, 0, 1)
+
+                local overlay = Instance.new("Frame")
+                overlay.Name = SNAP_OVERLAY_NAME
+                overlay.AnchorPoint = Vector2.new(0, 1)
+                overlay.Position = UDim2.fromScale(0, 1)
+                overlay.Size = UDim2.fromScale(1, ratio)
+                overlay.BackgroundColor3 = SNAP_COLOR
+                overlay.BackgroundTransparency = SNAP_TRANSPARENCY
+                overlay.BorderSizePixel = 0
+                overlay.ZIndex = button.ZIndex + 10
+                overlay.Parent = button
+
+                local tween = ts:Create(
+                    overlay,
+                    TweenInfo.new(
+                        remaining,
+                        Enum.EasingStyle.Linear,
+                        Enum.EasingDirection.Out
+                    ),
+                    {
+                        Size = UDim2.fromScale(1, 0)
+                    }
+                )
+
+                snap_state.shared_overlays[button] = overlay
+                snap_state.shared_tweens[button] = tween
+                tween:Play()
+
+                tween.Completed:Connect(function()
+                    if snap_state.shared_token ~= token then
+                        return
+                    end
+
+                    if snap_state.shared_tweens[button] == tween then
+                        snap_state.shared_tweens[button] = nil
+                    end
+                    if snap_state.shared_overlays[button] == overlay then
+                        snap_state.shared_overlays[button] = nil
+                    end
+
+                    if overlay and overlay.Parent then
+                        overlay:Destroy()
+                    end
+                end)
+            end
+
+            local function refresh_shared_visuals(token)
+                if snap_state.shared_token ~= token then
+                    return false
+                end
+
+                local remaining = snap_state.shared_end_at - os.clock()
+                if remaining <= 0 then
+                    return false
+                end
+
+                -- For now, only Snaps that have an explicit detector profile get the
+                -- shared blue overlay. This keeps the visual limited to Gelidus + Gate
+                -- until more Snap activation rules are added.
+                local player_gui = plr:FindFirstChild("PlayerGui")
+                local backpack_gui = player_gui and FindFirstChild(player_gui, "BackpackGui")
+                local main_frame = backpack_gui and FindFirstChild(backpack_gui, "MainFrame")
+
+                if main_frame then
+                    for _, button in ipairs(main_frame:GetChildren()) do
+                        local snap_name = button.Name:match("^%d+(.+)$")
+
+                        if snap_name
+                            and snap_profiles[snap_name]
+                            and not FindFirstChild(button, SNAP_OVERLAY_NAME)
+                        then
+                            create_shared_overlay(
+                                button,
+                                snap_state.shared_duration,
+                                remaining,
+                                token
+                            )
+                        end
+                    end
+                end
+
+                return true
+            end
+
+            local function start_shared_cooldown(duration)
+                if not cheat_client.config.cooldown_visualizer then
+                    return
+                end
+
+                duration = tonumber(duration) or 0
+                if duration <= 0 then
+                    return
+                end
+
+                destroy_shared_visuals()
+
+                snap_state.shared_token += 1
+                local token = snap_state.shared_token
+
+                snap_state.shared_duration = duration
+                snap_state.shared_end_at = os.clock() + duration
+
+                refresh_shared_visuals(token)
+
+                -- Keep rescanning during the shared cooldown. If a registered Snap
+                -- hotbar entry appears/rebuilds mid-CD, it immediately receives the
+                -- correct remaining blue overlay instead of looking ready.
+                task.spawn(function()
+                    while cheat_client.config.cooldown_visualizer
+                        and snap_state.shared_token == token
+                        and snap_state.shared_end_at > os.clock()
+                    do
+                        refresh_shared_visuals(token)
+                        task.wait(0.1)
+                    end
+
+                    if snap_state.shared_token == token then
+                        snap_state.shared_end_at = 0
+                        snap_state.shared_duration = 0
+                        destroy_shared_visuals()
+                    end
+                end)
+            end
+
+            local function snapshot_instances(character, wanted_names)
+                local baseline = setmetatable({}, {__mode = "k"})
+                if not character then
+                    return baseline
+                end
+
+                for _, object in ipairs(character:GetDescendants()) do
+                    if wanted_names[object.Name] then
+                        baseline[object] = true
+                    end
+                end
+
+                return baseline
+            end
+
+            local function finish_pending_with_shared_cooldown(token, duration)
+                if snap_state.pending_token ~= token then
+                    return
+                end
+
+                clear_pending()
+                start_shared_cooldown(duration)
+            end
+
+            local function watch_geli_freezing(profile, object, token)
+                if snap_state.pending_token ~= token
+                    or snap_state.pending_name ~= profile.name
+                    or not object
+                    or object.Name ~= profile.trigger_instance
+                then
+                    return
+                end
+
+                disconnect_geli_connection()
+                snap_state.geli_instance = object
+
+                local character = plr.Character
+                local connection
+                connection = object.AncestryChanged:Connect(function()
+                    task.defer(function()
+                        if snap_state.pending_token ~= token
+                            or snap_state.pending_name ~= profile.name
+                        then
+                            if connection then
+                                connection:Disconnect()
+                                connection = nil
+                            end
+                            return
+                        end
+
+                        local current_character = plr.Character
+                        if not object.Parent
+                            or not current_character
+                            or not object:IsDescendantOf(current_character)
+                        then
+                            if connection then
+                                connection:Disconnect()
+                                connection = nil
+                            end
+                            snap_state.geli_connection = nil
+                            snap_state.geli_instance = nil
+
+                            finish_pending_with_shared_cooldown(
+                                token,
+                                profile.shared_cooldown
+                            )
+                        end
+                    end)
+                end)
+
+                snap_state.geli_connection = connection
+
+                -- Handle the tiny race where it was removed just before the watcher attached.
+                task.defer(function()
+                    if snap_state.pending_token == token
+                        and snap_state.pending_name == profile.name
+                        and (not object.Parent
+                            or not character
+                            or not object:IsDescendantOf(character))
+                    then
+                        finish_pending_with_shared_cooldown(
+                            token,
+                            profile.shared_cooldown
+                        )
+                    end
+                end)
+            end
+
+            local function resolve_gate_success(profile, token)
+                finish_pending_with_shared_cooldown(
+                    token,
+                    profile.nofall_cooldown
+                )
+            end
+
+            local function begin_gate_nofall_window(profile, active_cast, token)
+                if snap_state.pending_token ~= token
+                    or snap_state.pending_name ~= profile.name
+                    or snap_state.gate_activecast_seen
+                    or not active_cast
+                then
+                    return
+                end
+
+                snap_state.gate_activecast_seen = true
+                snap_state.gate_activecast_at = os.clock()
+                snap_state.gate_activecast_instance = active_cast
+
+                -- Gate is intentionally sequential: ActiveCast must be seen first.
+                -- Only NoFall additions after this point can choose the 8s path.
+
+                -- Gate starts a 8.4-second cancel timer the moment ActiveCast appears.
+                -- If ActiveCast is removed before NoFall appears, the shared Snap CD is
+                -- exactly the TIME REMAINING on that 8.4-second timer.
+                -- Examples: removed after 2s -> 5.5s CD; removed after 5s -> 2.5s CD.
+                local connection
+                connection = active_cast.AncestryChanged:Connect(function()
+                    task.defer(function()
+                        if snap_state.pending_token ~= token
+                            or snap_state.pending_name ~= profile.name
+                        then
+                            if connection then
+                                connection:Disconnect()
+                                connection = nil
+                            end
+                            return
+                        end
+
+                        local character = plr.Character
+                        local removed = not active_cast.Parent
+                            or not character
+                            or not active_cast:IsDescendantOf(character)
+
+                        if removed and not snap_state.gate_nofall_seen then
+                            if connection then
+                                connection:Disconnect()
+                                connection = nil
+                            end
+                            snap_state.gate_activecast_connection = nil
+                            snap_state.gate_activecast_instance = nil
+
+                            local timer = profile.gate_timer or 8.4
+                            local elapsed = math.max(0, os.clock() - snap_state.gate_activecast_at)
+                            local remaining = math.max(0, timer - elapsed)
+
+                            if remaining > 0 then
+                                finish_pending_with_shared_cooldown(token, remaining)
+                            else
+                                -- The full cancel timer already elapsed, so there is no
+                                -- remaining shared cooldown to visualize.
+                                clear_pending()
+                            end
+                        end
+                    end)
+                end)
+                snap_state.gate_activecast_connection = connection
+
+                -- Stop listening after the 8.4-second Gate timer. If neither NoFall nor
+                -- an ActiveCast removal resolved the attempt by then, no cooldown remains.
+                local window = profile.gate_timer or 8.4
+                task.delay(window, function()
+                    if snap_state.pending_token ~= token
+                        or snap_state.pending_name ~= profile.name
+                        or not snap_state.gate_activecast_seen
+                    then
+                        return
+                    end
+
+                    clear_pending()
+                end)
+            end
+
+            local function handle_descendant_added(object)
+                if not cheat_client.config.cooldown_visualizer
+                    or not object
+                    or not snap_state.pending_name
+                    or not snap_state.pending_at
+                then
+                    return
+                end
+
+                local profile = snap_profiles[snap_state.pending_name]
+                if not profile then
+                    return
+                end
+
+                local token = snap_state.pending_token
+                local baseline = snap_state.baseline
+
+                if baseline and baseline[object] then
+                    return
+                end
+
+                if profile.special == "gelidus_remove" then
+                    if object.Name == profile.trigger_instance then
+                        watch_geli_freezing(profile, object, token)
+                    end
+
+                elseif profile.special == "gate_nofall" then
+                    if object.Name == profile.active_cast_instance then
+                        begin_gate_nofall_window(profile, object, token)
+
+                    elseif object.Name == profile.nofall_instance
+                        and snap_state.gate_activecast_seen
+                        and snap_state.gate_activecast_at
+                    then
+                        snap_state.gate_nofall_seen = true
+                        snap_state.gate_nofall_seen_at = os.clock()
+
+                        if (snap_state.gate_nofall_seen_at - snap_state.gate_activecast_at)
+                            <= (profile.gate_timer or 8.4)
+                        then
+                            resolve_gate_success(profile, token)
+                        end
+                    end
+                end
+            end
+
+            local function get_equipped_snap_profile()
+                local character = plr.Character
+                if not character then
+                    return nil
+                end
+
+                for _, object in ipairs(character:GetChildren()) do
+                    if object:IsA("Tool") then
+                        local profile = snap_profiles[object.Name]
+                        if profile then
+                            return profile
+                        end
+                    end
+                end
+
+                return nil
+            end
+
+            local function handle_remote(event, remotes_folder)
+                if not cheat_client.config.cooldown_visualizer then
+                    return
+                end
+
+                if not remotes_folder
+                    or event.Parent ~= remotes_folder
+                    or event.Name ~= "RightClick"
+                then
+                    return
+                end
+
+                -- Do NOT reject a RightClick just because our estimated/shared visual
+                -- cooldown still has a little time left. The game's real confirmation
+                -- signals are authoritative. This matters for fast Gelidus re-use: the
+                -- game can allow the next Snap slightly before our previous blue timer
+                -- reaches zero. If the Snap is actually still blocked, no GeliFreezing
+                -- / ActiveCast confirmation will appear, so no new cooldown is started.
+                local profile = get_equipped_snap_profile()
+
+                -- Any real RightClick supersedes a stale unresolved Snap attempt.
+                -- If the currently equipped tool is not one of our configured Snap
+                -- detectors, this simply clears the old pending state and exits.
+                clear_pending()
+
+                if not profile then
+                    return
+                end
+
+                snap_state.pending_name = profile.name
+                snap_state.pending_at = os.clock()
+
+                local wanted_names = {}
+                if profile.special == "gelidus_remove" then
+                    wanted_names[profile.trigger_instance] = true
+                elseif profile.special == "gate_nofall" then
+                    wanted_names[profile.active_cast_instance] = true
+                    wanted_names[profile.nofall_instance] = true
+                end
+
+                snap_state.baseline = snapshot_instances(plr.Character, wanted_names)
+            end
+
+            local function reset_all()
+                clear_pending()
+
+                snap_state.shared_token += 1
+                snap_state.shared_end_at = 0
+                snap_state.shared_duration = 0
+                destroy_shared_visuals()
+            end
+
+            return {
+                handle_remote = handle_remote,
+                handle_descendant_added = handle_descendant_added,
+                reset_all = reset_all,
+            }
+        end)()
+
+        local function cancel_visual(profile)
+            local state = profile and states[profile.name]
+            if not state then
+                return
+            end
+
+            if state.tween then
+                pcall(function()
+                    state.tween:Cancel()
+                end)
+                state.tween = nil
+            end
+
+            if state.overlay then
+                pcall(function()
+                    state.overlay:Destroy()
+                end)
+                state.overlay = nil
+            end
+        end
+
+        local function clear_move(profile)
+            local state = profile and states[profile.name]
+            if not state then
+                return
+            end
+
+            state.pending_at = nil
+            state.pending_button = nil
+            state.pending_token += 1
+            state.pending_speedlock_seen = false
+            state.pending_speedlock_baseline = nil
+            state.pending_required_instance_seen = false
+            state.pending_animation_seen = false
+
+            state.special_active = false
+            state.special_started_at = nil
+            state.special_button = nil
+            state.special_token += 1
+            state.speedlock_seen = false
+            state.speedlock_baseline = nil
+
+            if state.emerge_connections then
+                for _, connection in ipairs(state.emerge_connections) do
+                    pcall(function()
+                        connection:Disconnect()
+                    end)
+                end
+            end
+            state.emerge_connections = {}
+            state.emerge_watched = setmetatable({}, {__mode = "k"})
+
+            state.move_track_token += 1
+            state.move_in_progress = false
+
+            cancel_visual(profile)
+        end
+
+        local function clear_all()
+            for _, profile in pairs(profiles) do
+                clear_move(profile)
+            end
+        end
+
+        local function remove_ui_overlays()
+            local player_gui = plr:FindFirstChild("PlayerGui")
+            local backpack_gui = player_gui and FindFirstChild(player_gui, "BackpackGui")
+            local main_frame = backpack_gui and FindFirstChild(backpack_gui, "MainFrame")
+
+            if not main_frame then
+                return
+            end
+
+            for _, object in ipairs(main_frame:GetChildren()) do
+                local overlay = FindFirstChild(object, "CooldownVisualizerOverlay")
+                if overlay then
+                    overlay:Destroy()
+                end
+            end
+        end
+
+        -- elapsed_offset lets a cooldown be reconstructed after we waited for a
+        -- condition. Example: Rift Dive's 29s fallback is measured from the
+        -- original use, even though we do not know it is the fallback until 1.25s.
+        local function start_cooldown(profile, cached_button, duration_override, elapsed_offset)
+            if not cheat_client.config.cooldown_visualizer then
+                return
+            end
+
+            local state = states[profile.name]
+            if not state then
+                return
+            end
+
+            local move_button = cached_button
+            if not move_button or not move_button.Parent then
+                move_button = find_hotbar_button(profile.name)
+            end
+
+            if not move_button then
+                return
+            end
+
+            local total_duration = tonumber(duration_override) or profile.cooldown_time
+            if total_duration <= 0 then
+                return
+            end
+
+            local elapsed = math.clamp(tonumber(elapsed_offset) or 0, 0, total_duration)
+            local remaining = total_duration - elapsed
+
+            -- Base behavior: every confirmed valid use ALWAYS replaces the
+            -- previous visual for this move.
+            cancel_visual(profile)
+
+            local old_overlay = FindFirstChild(move_button, "CooldownVisualizerOverlay")
+            if old_overlay then
+                old_overlay:Destroy()
+            end
+
+            if remaining <= 0 then
+                return
+            end
+
+            local remaining_ratio = remaining / total_duration
+
+            local overlay = Instance.new("Frame")
+            overlay.Name = "CooldownVisualizerOverlay"
+            overlay.AnchorPoint = Vector2.new(0, 1)
+            overlay.Position = UDim2.fromScale(0, 1)
+            overlay.Size = UDim2.fromScale(1, remaining_ratio)
+            overlay.BackgroundColor3 = Color3.fromRGB(255, 35, 35)
+            overlay.BackgroundTransparency = 0.45
+            overlay.BorderSizePixel = 0
+            overlay.ZIndex = move_button.ZIndex + 10
+            overlay.Parent = move_button
+
+            local tween = ts:Create(
+                overlay,
+                TweenInfo.new(
+                    remaining,
+                    Enum.EasingStyle.Linear,
+                    Enum.EasingDirection.Out
+                ),
+                {
+                    Size = UDim2.fromScale(1, 0)
+                }
+            )
+
+            state.overlay = overlay
+            state.tween = tween
+            tween:Play()
+
+            tween.Completed:Connect(function()
+                -- A newer confirmed use may have already replaced this tween.
+                if state.tween ~= tween then
+                    return
+                end
+
+                state.tween = nil
+                state.overlay = nil
+
+                if overlay and overlay.Parent then
+                    overlay:Destroy()
+                end
+            end)
+        end
+
+        local function disconnect_emerge_watchers(state)
+            if state.emerge_connections then
+                for _, connection in ipairs(state.emerge_connections) do
+                    pcall(function()
+                        connection:Disconnect()
+                    end)
+                end
+            end
+
+            state.emerge_connections = {}
+            state.emerge_watched = setmetatable({}, {__mode = "k"})
+        end
+
+        local function reset_special_state(state)
+            disconnect_emerge_watchers(state)
+
+            state.special_active = false
+            state.special_started_at = nil
+            state.special_button = nil
+            state.speedlock_seen = false
+            state.speedlock_baseline = nil
+        end
+
+        local function finish_rift_dive_from_emerge(profile, state)
+            -- IMPORTANT: Emerge existing is not enough. This function is called only
+            -- from an actual Sound playback signal (Played or Playing=true).
+            if not state.special_active or not state.special_started_at then
+                return
+            end
+
+            if not state.speedlock_seen then
+                return
+            end
+
+            local elapsed = os.clock() - state.special_started_at
+            if elapsed < 0 or elapsed > (profile.emerge_window or 10) then
+                return
+            end
+
+            local button = state.special_button
+            local duration = profile.emerge_cooldown or 30
+
+            state.special_token += 1
+            reset_special_state(state)
+
+            -- Full Rift Dive cooldown begins only when Emerge ACTUALLY starts playing.
+            start_cooldown(profile, button, duration, 0)
+        end
+
+        local function watch_emerge_sound(profile, state, sound)
+            if not sound or not sound:IsA("Sound") or sound.Name ~= "Emerge" then
+                return
+            end
+
+            state.emerge_watched = state.emerge_watched or setmetatable({}, {__mode = "k"})
+            state.emerge_connections = state.emerge_connections or {}
+
+            if state.emerge_watched[sound] then
+                return
+            end
+            state.emerge_watched[sound] = true
+
+            -- Played catches Sound:Play(). Watching Playing as well catches games that
+            -- start audio by assigning Playing=true instead. Both callbacks are safe:
+            -- the first valid one resets special_active, making the other a no-op.
+            local played_connection = sound.Played:Connect(function()
+                finish_rift_dive_from_emerge(profile, state)
+            end)
+            table.insert(state.emerge_connections, played_connection)
+
+            local playing_connection = sound:GetPropertyChangedSignal("Playing"):Connect(function()
+                if sound.Playing then
+                    finish_rift_dive_from_emerge(profile, state)
+                end
+            end)
+            table.insert(state.emerge_connections, playing_connection)
+
+            -- Close the tiny race where the sound began playing just before we attached.
+            if sound.Playing then
+                task.defer(function()
+                    finish_rift_dive_from_emerge(profile, state)
+                end)
+            end
+        end
+
+        local function mark_special_animation_active(state, track)
+            state.move_track_token += 1
+            local token = state.move_track_token
+            state.move_in_progress = true
+
+            if not track then
+                return
+            end
+
+            local stop_connection
+            stop_connection = track.Stopped:Connect(function()
+                if state.move_track_token == token then
+                    state.move_in_progress = false
+                end
+
+                if stop_connection then
+                    stop_connection:Disconnect()
+                    stop_connection = nil
+                end
+            end)
+
+            -- Safety only: do not let a broken/stuck AnimationTrack permanently
+            -- lock the move. Rift Dive's real resolution is still Emerge.
+            task.delay(15, function()
+                if state.move_track_token == token then
+                    state.move_in_progress = false
+                end
+
+                if stop_connection then
+                    pcall(function()
+                        stop_connection:Disconnect()
+                    end)
+                    stop_connection = nil
+                end
+            end)
+        end
+
+        local function start_rift_dive_resolution(profile, state, cached_button, activation_at, early_speedlock_seen, speedlock_baseline)
+            -- A newly confirmed use supersedes any previous visual/special flow.
+            cancel_visual(profile)
+
+            state.special_token += 1
+            local token = state.special_token
+
+            state.special_active = true
+            state.special_started_at = activation_at
+            state.special_button = cached_button
+            state.speedlock_seen = early_speedlock_seen and true or false
+            state.speedlock_baseline = speedlock_baseline
+
+            -- Emerge may already exist as a Sound before the move ends. Watch every
+            -- existing copy, but do NOT resolve anything until one actually plays.
+            local character = plr.Character
+            if character then
+                for _, object in ipairs(character:GetDescendants()) do
+                    if object:IsA("Sound") and object.Name == "Emerge" then
+                        watch_emerge_sound(profile, state, object)
+                    end
+                end
+            end
+
+            local speedlock_window = profile.speedlock_window or 1.25
+            local emerge_window = profile.emerge_window or 10
+
+            -- At 1.25s from the original use, no SpeedLock means Rift Dive did
+            -- not enter its long active state. Reconstruct the normal 29s
+            -- cooldown from the original activation time.
+            task.delay(math.max(0, (activation_at + speedlock_window) - os.clock()), function()
+                if state.special_token ~= token or not state.special_active then
+                    return
+                end
+
+                -- DescendantAdded can race the animation-confirmation callback.
+                -- Before choosing the 29s fallback, do one authoritative rescan:
+                -- any SpeedLock that exists now but did NOT exist at activation
+                -- counts as the Rift Dive SpeedLock.
+                if not state.speedlock_seen then
+                    local character = plr.Character
+                    local baseline = state.speedlock_baseline
+
+                    if character then
+                        for _, object in ipairs(character:GetDescendants()) do
+                            if object.Name == "SpeedLock"
+                                and (not baseline or not baseline[object])
+                            then
+                                state.speedlock_seen = true
+                                break
+                            end
+                        end
+                    end
+                end
+
+                if not state.speedlock_seen then
+                    local button = state.special_button
+                    local elapsed = math.max(0, os.clock() - activation_at)
+
+                    state.special_token += 1
+                    reset_special_state(state)
+
+                    start_cooldown(profile, button, profile.cooldown_time, elapsed)
+                end
+            end)
+
+            -- Safety fallback: SpeedLock appeared, but Emerge never did.
+            -- In that case, return to the normal cooldown timeline.
+            task.delay(math.max(0, (activation_at + emerge_window) - os.clock()), function()
+                if state.special_token ~= token or not state.special_active then
+                    return
+                end
+
+                local button = state.special_button
+                local elapsed = math.max(0, os.clock() - activation_at)
+
+                state.special_token += 1
+                reset_special_state(state)
+
+                start_cooldown(profile, button, profile.cooldown_time, elapsed)
+            end)
+        end
+
+        local function try_confirm_instance_and_animation(profile, state)
+            if not state or not state.pending_at then
+                return false
+            end
+
+            if not state.pending_animation_seen or not state.pending_required_instance_seen then
+                return false
+            end
+
+            local window = profile.required_instance_window or profile.animation_window
+            local elapsed = os.clock() - state.pending_at
+            if elapsed < 0 or elapsed > window then
+                return false
+            end
+
+            local cached_button = state.pending_button
+
+            -- Invalidate the pending activation before starting the visual so a late
+            -- duplicate animation/instance cannot confirm this same use twice.
+            state.pending_at = nil
+            state.pending_button = nil
+            state.pending_token += 1
+            state.pending_required_instance_seen = false
+            state.pending_animation_seen = false
+
+            start_cooldown(profile, cached_button)
+            return true
+        end
+
+        local function handle_character_descendant(object)
+            if not cheat_client.config.cooldown_visualizer then
+                return
+            end
+
+            -- Snap confirmation signals share the same character DescendantAdded feed.
+            snap_system.handle_descendant_added(object)
+
+            -- Only special profiles need character-instance signals.
+            for _, profile in pairs(profiles) do
+                if profile.special == "instance_and_animation" then
+                    local state = states[profile.name]
+
+                    if state and state.pending_at then
+                        local elapsed = os.clock() - state.pending_at
+                        local window = profile.required_instance_window or profile.animation_window
+                        local class_ok = not profile.required_instance_class
+                            or object:IsA(profile.required_instance_class)
+
+                        if elapsed >= 0
+                            and elapsed <= window
+                            and object.Name == profile.required_instance_name
+                            and class_ok
+                        then
+                            state.pending_required_instance_seen = true
+                            try_confirm_instance_and_animation(profile, state)
+                        end
+                    end
+
+                elseif profile.special == "rift_dive" then
+                    local state = states[profile.name]
+
+                    if state then
+                        local now = os.clock()
+
+                        -- IMPORTANT: capture a newly-added SpeedLock from the moment
+                        -- the LeftClick remote fires, not only after the start animation
+                        -- has confirmed. This closes the race that could make Rift Dive
+                        -- incorrectly choose the 29s fallback.
+                        if object.Name == "SpeedLock" and state.pending_at then
+                            local pending_elapsed = now - state.pending_at
+                            local baseline = state.pending_speedlock_baseline
+
+                            if pending_elapsed >= 0
+                                and pending_elapsed <= (profile.speedlock_window or 1.25)
+                                and (not baseline or not baseline[object])
+                            then
+                                state.pending_speedlock_seen = true
+                            end
+                        end
+
+                        if state.special_active and state.special_started_at then
+                            local elapsed = now - state.special_started_at
+
+                            -- Re-equipping Rift Dive can create/recreate an Emerge Sound.
+                            -- Creation alone means NOTHING; only wire a playback watcher.
+                            if object:IsA("Sound")
+                                and object.Name == "Emerge"
+                                and elapsed >= 0
+                                and elapsed <= (profile.emerge_window or 10)
+                            then
+                                watch_emerge_sound(profile, state, object)
+                            end
+
+                            -- SpeedLock must be ADDED within 1.25s of the move use.
+                            if object.Name == "SpeedLock"
+                                and elapsed >= 0
+                                and elapsed <= (profile.speedlock_window or 1.25)
+                                and (not state.speedlock_baseline or not state.speedlock_baseline[object])
+                            then
+                                state.speedlock_seen = true
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        local function confirm_animation(animation_id, track)
+            if not cheat_client.config.cooldown_visualizer then
+                return
+            end
+
+            local matching_profiles = animations[animation_id]
+            if not matching_profiles then
+                return
+            end
+
+            local now = os.clock()
+
+            for _, profile in ipairs(matching_profiles) do
+                local state = states[profile.name]
+                local pending_at = state and state.pending_at
+
+                if pending_at then
+                    local delta = now - pending_at
+
+                    if delta >= 0 and delta <= profile.animation_window then
+                        if profile.special == "instance_and_animation" then
+                            -- Do not confirm from the animation alone. Remember it and
+                            -- wait for the required instance if it has not arrived yet.
+                            state.pending_animation_seen = true
+                            try_confirm_instance_and_animation(profile, state)
+                        else
+                            local cached_button = state.pending_button
+                            local activation_at = pending_at
+                            local early_speedlock_seen = state.pending_speedlock_seen
+                            local speedlock_baseline = state.pending_speedlock_baseline
+
+                            state.pending_at = nil
+                            state.pending_button = nil
+                            state.pending_token += 1
+                            state.pending_speedlock_seen = false
+                            state.pending_speedlock_baseline = nil
+
+                            if profile.special == "rift_dive" then
+                                mark_special_animation_active(state, track)
+                                start_rift_dive_resolution(
+                                    profile,
+                                    state,
+                                    cached_button,
+                                    activation_at,
+                                    early_speedlock_seen,
+                                    speedlock_baseline
+                                )
+                            else
+                                start_cooldown(profile, cached_button)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        local function setup_character(character)
+            if animation_connection then
+                pcall(function()
+                    animation_connection:Disconnect()
+                end)
+                animation_connection = nil
+            end
+
+            if descendant_connection then
+                pcall(function()
+                    descendant_connection:Disconnect()
+                end)
+                descendant_connection = nil
+            end
+
+            clear_all()
+            snap_system.reset_all()
+
+            -- Connect this immediately so special move signals cannot be missed.
+            descendant_connection = utility:Connection(character.DescendantAdded, handle_character_descendant)
+
+            task.spawn(function()
+                local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 10)
+                if not humanoid or character ~= plr.Character then
+                    return
+                end
+
+                local animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator", 5)
+                if not animator or character ~= plr.Character then
+                    return
+                end
+
+                animation_connection = utility:Connection(animator.AnimationPlayed, function(track)
+                    local animation = track.Animation
+                    if not animation then
+                        return
+                    end
+
+                    confirm_animation(clean_animation_id(animation.AnimationId), track)
+                end)
+            end)
+        end
+
+        local function handle_remote(event, remotes_folder)
+            if not cheat_client.config.cooldown_visualizer then
+                return
+            end
+
+            -- Snaps use RightClick and their own confirmation/state machine.
+            snap_system.handle_remote(event, remotes_folder)
+
+            -- Normal move cooldowns continue to use LeftClick.
+            if not remotes_folder or event.Parent ~= remotes_folder or event.Name ~= "LeftClick" then
+                return
+            end
+
+            local profile = get_equipped_profile()
+            if not profile then
+                return
+            end
+
+            local state = states[profile.name]
+            if not state then
+                return
+            end
+
+            -- IMPORTANT BASE BEHAVIOR FOR SPECIAL MOVES:
+            -- If a confirmed special move is already waiting for its end/resolution
+            -- signal (for Rift Dive: Emerge), ignore any new LeftClick/equip noise.
+            -- This prevents unselecting + reselecting the same tool from restarting
+            -- its detection flow and incorrectly forcing the fallback cooldown.
+            if profile.special
+                and profile.block_retrigger_while_special ~= false
+                and (state.special_active or state.move_in_progress)
+            then
+                return
+            end
+
+            state.pending_token += 1
+            local token = state.pending_token
+
+            -- Cache the exact UI entry immediately. The player can unequip or
+            -- swap tools before the animation arrives and the cooldown still applies.
+            state.pending_button = find_hotbar_button(profile.name)
+            state.pending_at = os.clock()
+            state.pending_required_instance_seen = false
+            state.pending_animation_seen = false
+
+            -- Snapshot every SpeedLock that already existed BEFORE this use.
+            -- A later scan can therefore distinguish the Rift Dive SpeedLock from
+            -- unrelated/pre-existing SpeedLocks.
+            if profile.special == "rift_dive" then
+                local baseline = {}
+                local character = plr.Character
+
+                if character then
+                    for _, object in ipairs(character:GetDescendants()) do
+                        if object.Name == "SpeedLock" then
+                            baseline[object] = true
+                        end
+                    end
+                end
+
+                state.pending_speedlock_baseline = baseline
+                state.pending_speedlock_seen = false
+            end
+
+            task.delay(profile.animation_window, function()
+                if state.pending_token == token then
+                    state.pending_at = nil
+                    state.pending_button = nil
+                    state.pending_speedlock_seen = false
+                    state.pending_speedlock_baseline = nil
+                    state.pending_required_instance_seen = false
+                    state.pending_animation_seen = false
+                end
+            end)
+        end
+
+        local function set_enabled(enabled)
+            cheat_client.config.cooldown_visualizer = enabled and true or false
+
+            if not enabled then
+                clear_all()
+                snap_system.reset_all()
+                remove_ui_overlays()
+            end
+        end
+
+        if plr.Character then
+            setup_character(plr.Character)
+        end
+
+        utility:Connection(plr.CharacterAdded, function(character)
+            setup_character(character)
+        end)
+
+        return {
+            handle_remote = handle_remote,
+            set_enabled = set_enabled,
+        }
+    end)()
+
     do
         local Options = library.Options
         local Toggles = library.Toggles
@@ -8674,6 +10081,16 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             local group_overlays = Tabs.Visuals:AddRightGroupbox("Overlays")
+
+            group_overlays:AddToggle("CooldownVisualizer", {
+                Text = "Cooldown Visualizer",
+                Tooltip = "Shows red move cooldowns and blue shared Snap cooldowns after confirmed successful uses.",
+                Default = cheat_client.config.cooldown_visualizer
+            })
+
+            Toggles.CooldownVisualizer:OnChanged(function()
+                cheat_client.cooldown_visualizer.set_enabled(Toggles.CooldownVisualizer.Value)
+            end)
 
             group_overlays:AddToggle("mana_overlay", {
                 Text = "Mana Overlay",
@@ -24469,6 +25886,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     local remotes_folder = char
                         and FindFirstChild(char, "CharacterHandler")
                         and FindFirstChild(char.CharacterHandler, "Remotes")
+
+                    -- Cooldown Visualizer only opens an activation window here.
+                    -- The move is confirmed later by its animation.
+                    cheat_client.cooldown_visualizer.handle_remote(Event, remotes_folder)
 
                     if shared and not mana_remote and remotes_folder and Event.Parent == remotes_folder then
                         if game.PlaceId == 14341521240 then
