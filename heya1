@@ -30006,7 +30006,7 @@ end
                                 {position = Vector3.new(729.379, 3694.39, -12.575), radius = 77, name = "The Tip of Skycastle", image = "https://i.imgur.com/FC0ZmkR.png"},
                                 {position = Vector3.new(372, 3777.64, -7), radius = 66, name = "Under a Starry Night", image = "https://i.imgur.com/bGgrwJO.png"},
                                 {position = Vector3.new(5790.538, 1431.794, 860.062), radius = 77, name = "Top of Snail", image = "https://i.imgur.com/ps4dA0s.png"},
-                                {position = Vector3.new(4003, 443.794, -1017), radius = 160, name = "Snake Pit", image = "https://i.imgur.com/SlWbHjP.png"},
+                                {position = Vector3.new(4003, 443.794, -1017), radius = 160, name = "Snake Pit", image = "https://i.imgur.com/drErweo.png"},
                                 {position = Vector3.new(3208.855, 124.868, -2453.623), radius = 15, name = "Behind Crates", image = "https://i.imgur.com/2XATSr3.png"},
                                 {position = Vector3.new(3270.355, 207.368, -2535.123), radius = 16, name = "Side of Inn", image = "https://i.imgur.com/e9HDhYp.png"},
                                 {position = Vector3.new(3340.355, 202.368, -2468.123), radius = 20, name = "Inn Beds", image = "https://i.imgur.com/O2ytyLr.png"},
@@ -30063,6 +30063,8 @@ end
                                 {position = Vector3.new(1196.355, 199.368, -3250.123), radius = 33, name = "Ruins #8", image = "https://i.imgur.com/WznBeLu.png"},
                                 {position = Vector3.new(3211.294, 139.868, -2515.57), radius = 22, name = "Toliethand Room", image = "https://i.imgur.com/csz7qLY.png"},
                                 {position = Vector3.new(1994.355, 139.362, -2099.123), radius = 22, name = "Stairs to ZScrooms", image = "https://i.imgur.com/nYkpzEJ.png"},
+                                {position = Vector3.new(3142.855, 150.868, -2486.123), radius = 22, name = "Top of Doctor", image = "https://i.imgur.com/XyWRu8t.png"},
+                                {position = Vector3.new(1903.5, 96.5, 1512.5), radius = 33, name = "Scroomville Corner", image = "https://i.imgur.com/SmjWUZA.png"},
 
 
 
@@ -30074,7 +30076,7 @@ end
                             local general_artifact_area_images = {
                                 {match = "Sigma", image = "https://i.imgur.com/z4hntjV.png", send_data = false},
                                 {match = "the Sky", image = "https://i.imgur.com/p0MPHct.png", send_data = true},
-                                {match = "Snail", image = "https://i.imgur.com/d4w42MY.png", send_data = true},
+                                {match = "Snail", image = "https://i.imgur.com/d4w42MY.png", send_data = false},
                                 {match = "Temple of Fire", image = "https://i.imgur.com/DEbxHhg.png", send_data = true},
                                 {match = "Flowerlight", image = "https://i.imgur.com/8KbMjfp.png", send_data = true},
                                 {match = "Deepforest Sanctuary", image = "https://i.imgur.com/GEFKPnX.png", send_data = false},
@@ -30089,6 +30091,7 @@ end
                                 {match = "Scroomville", image = "https://i.imgur.com/D2rwXS3.png", send_data = true},
                                 {match = "Northern", image = "https://i.imgur.com/8ZxOcEu.png", send_data = false},
                                 {match = "the End", image = "https://i.imgur.com/MkYdXHr.png", send_data = false},
+                                {match = "The Crack", image = "https://i.imgur.com/OlKc4xS.png", send_data = false},
                             }
 
                             local function detectArtifactArea()
