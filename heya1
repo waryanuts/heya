@@ -29862,7 +29862,7 @@ end
                                 {position = Vector3.new(1166, -254.6, -4566), radius = 50, name = "DSK trainer pathway", image = "https://i.imgur.com/ZvJtjhq.png"},
                                 {position = Vector3.new(-284, 299.594, 42), radius = 7, name = "Top of Sentinel Entrance", image = "https://i.imgur.com/hgT4geY.png"},
                                 {position = Vector3.new(-281.197, 516.939, 1109.766), radius = 80, name = "Left side of Tower on the wall", image = "https://i.imgur.com/qFIuaJZ.png"},
-                                {position = Vector3.new(-1180, 863.189, 2651), radius = 155, name = "Spy Tower", image = "https://i.imgur.com/RMqmuZG.png"},
+                                {position = Vector3.new(-1180, 863.189, 2651), radius = 155, name = "Spy Tower", image = "https://i.imgur.com/Gb85JT3.png"},
                                 {position = Vector3.new(-2665, 605.555, 116), radius = 33, name = "Sewers", image = "https://i.imgur.com/unXqZH3.png"},
                                 {position = Vector3.new(2408.028, 290.709, 904), radius = 40, name = "Tree House", image = "https://i.imgur.com/ocLZfzr.png"},
                                 {position = Vector3.new(4901.285, 1007.794, 1373.176), radius = 77, name = "Top of Dragonpit", image = "https://i.imgur.com/xb8b8UM.png"},
