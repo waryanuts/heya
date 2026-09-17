@@ -29955,6 +29955,7 @@ end
                                 {match = "Tower On", image = "https://i.imgur.com/wMPoAlF.png", send_data = true},
                                 {match = "Scroomville", image = "https://i.imgur.com/D2rwXS3.png", send_data = true},
                                 {match = "Northern", image = "https://i.imgur.com/8ZxOcEu.png", send_data = false},
+                                {match = "the End", image = "https://i.imgur.com/MkYdXHr.png", send_data = false},
                             }
 
                             local function detectArtifactArea()
