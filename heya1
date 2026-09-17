@@ -1003,7 +1003,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
     -- intercepts those writes and stretches the complete horizontal velocity curve.
     -- It intentionally keeps the original P and MaxForce unchanged.
     do
-        local BLACKSMITH_M2_MULTIPLIER = 1.08
+        local BLACKSMITH_M2_MULTIPLIER = 1.53
         local BLACKSMITH_M2_MAXFORCE = Vector3.new(80000, 0, 80000)
         local BLACKSMITH_M2_FORCE_TOLERANCE = 2
         local BLACKSMITH_M2_P = 1250
@@ -1027,17 +1027,54 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 and math.abs(value - BLACKSMITH_M2_P) <= BLACKSMITH_M2_P_TOLERANCE
         end
 
+        local BLACKSMITH_M2_FEEDBACK_BIAS = 0.25
+        local BLACKSMITH_M2_MAX_UNSCALE_PASSES = 6
+
+        -- The game's curve can occasionally calculate its next write from the
+        -- BodyVelocity value we already boosted. If we blindly multiply that write
+        -- again, 1.08x can become 1.08^2, 1.08^3, etc. and cause a huge launch.
+        --
+        -- Compare the incoming horizontal velocity against the last ORIGINAL/raw
+        -- curve value. If removing one or more 1.08x layers makes it closer to that
+        -- raw curve, strip those layers first. The final 1.08x is then applied once.
+        local function blacksmith_m2_remove_compound_layers(horizontal, state)
+            if not state or not state.last_raw_horizontal then
+                return horizontal
+            end
+
+            local candidate = horizontal
+            local last_raw = state.last_raw_horizontal
+
+            for _ = 1, BLACKSMITH_M2_MAX_UNSCALE_PASSES do
+                local unscaled = candidate / BLACKSMITH_M2_MULTIPLIER
+                local candidate_distance = (candidate - last_raw).Magnitude
+                local unscaled_distance = (unscaled - last_raw).Magnitude
+
+                if unscaled_distance + BLACKSMITH_M2_FEEDBACK_BIAS < candidate_distance then
+                    candidate = unscaled
+                else
+                    break
+                end
+            end
+
+            return candidate
+        end
+
         local function blacksmith_m2_stretch_velocity(value, state)
             if typeof(value) ~= "Vector3" then
                 return value
             end
 
-            local horizontal = Vector3.new(value.X, 0, value.Z)
-            local speed = horizontal.Magnitude
-
-            if speed <= 0.01 or not state or state.tail_started then
+            local incoming_horizontal = Vector3.new(value.X, 0, value.Z)
+            if incoming_horizontal.Magnitude <= 0.01 or not state or state.tail_started then
                 return value
             end
+
+            -- Normalize away any copies of our own previous 1.08x boost before
+            -- doing curve/tail checks. This makes the operation effectively
+            -- idempotent: feeding a boosted value back in does not boost it again.
+            local horizontal = blacksmith_m2_remove_compound_layers(incoming_horizontal, state)
+            local speed = horizontal.Magnitude
 
             -- Do not touch any small pre-lunge/setup writes. The real Blacksmith
             -- lunge is the high-speed phase (~83 studs/s from our debug).
@@ -1048,15 +1085,21 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 state.main_seen = true
             end
 
-            -- Once the move drops into its ~23/~16 studs/s tail, stop modifying
-            -- the mover for the rest of its lifetime. This prevents the rare
-            -- little shove that could happen right at the end of the lunge.
+            -- Once the ORIGINAL/raw curve drops into its ~23/~16 studs/s tail,
+            -- stop modifying the mover for the rest of its lifetime. This prevents
+            -- the rare little shove that could happen right at the end of the lunge.
             if speed < BLACKSMITH_M2_TAIL_CUTOFF_SPEED then
                 state.tail_started = true
                 return value
             end
 
             local scaled = horizontal * BLACKSMITH_M2_MULTIPLIER
+
+            -- Save both sides of this write so the next curve update can tell
+            -- whether it is raw game velocity or feedback from our boosted value.
+            state.last_raw_horizontal = horizontal
+            state.last_scaled_horizontal = scaled
+
             return Vector3.new(scaled.X, value.Y, scaled.Z)
         end
 
