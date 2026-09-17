@@ -464,6 +464,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             no_stun = false,
             gelidus_boost = false,
             gelidus_boost_value = 103,
+            blacksmith_m2_serum = false,
             hoppa_boost = false,
             foot_serum = false,
             foot_serum_value = 2.8,
@@ -996,6 +997,96 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         connections = {},
         window_active = true,
     }
+
+    -- Blacksmith M2 Serum
+    -- The game repeatedly rewrites ForwardVelocity throughout the lunge, so this
+    -- intercepts those writes and stretches the complete horizontal velocity curve.
+    -- It intentionally keeps the original P and MaxForce unchanged.
+    do
+        local BLACKSMITH_M2_MULTIPLIER = 1.082
+        local BLACKSMITH_M2_MAXFORCE = Vector3.new(80000, 0, 80000)
+        local BLACKSMITH_M2_FORCE_TOLERANCE = 2
+        local BLACKSMITH_M2_P = 1250
+        local BLACKSMITH_M2_P_TOLERANCE = 10
+
+        local blacksmith_m2_latched = setmetatable({}, {__mode = "k"})
+
+        local function blacksmith_m2_force_matches(value)
+            return typeof(value) == "Vector3"
+                and math.abs(value.X - BLACKSMITH_M2_MAXFORCE.X) <= BLACKSMITH_M2_FORCE_TOLERANCE
+                and math.abs(value.Y - BLACKSMITH_M2_MAXFORCE.Y) <= BLACKSMITH_M2_FORCE_TOLERANCE
+                and math.abs(value.Z - BLACKSMITH_M2_MAXFORCE.Z) <= BLACKSMITH_M2_FORCE_TOLERANCE
+        end
+
+        local function blacksmith_m2_p_matches(value)
+            return type(value) == "number"
+                and math.abs(value - BLACKSMITH_M2_P) <= BLACKSMITH_M2_P_TOLERANCE
+        end
+
+        local function blacksmith_m2_stretch_velocity(value)
+            if typeof(value) ~= "Vector3" then
+                return value
+            end
+
+            local horizontal = Vector3.new(value.X, 0, value.Z)
+            if horizontal.Magnitude <= 0.01 then
+                return value
+            end
+
+            local scaled = horizontal * BLACKSMITH_M2_MULTIPLIER
+            return Vector3.new(scaled.X, value.Y, scaled.Z)
+        end
+
+        old_newindex = hookmetamethod(game, "__newindex", newcclosure(function(self, key, value)
+            if not checkcaller()
+                and not (shared and shared.is_unloading)
+                and cheat_client
+                and cheat_client.config
+                and cheat_client.config.blacksmith_m2_serum
+                and typeof(self) == "Instance"
+                and self:IsA("BodyVelocity")
+                and self.Name == "ForwardVelocity"
+            then
+                local future_force = (key == "MaxForce") and value or self.MaxForce
+                local future_p = (key == "P") and value or self.P
+
+                -- Latch as soon as this ForwardVelocity has the Blacksmith M2 signature.
+                if not blacksmith_m2_latched[self]
+                    and blacksmith_m2_force_matches(future_force)
+                    and blacksmith_m2_p_matches(future_p)
+                then
+                    blacksmith_m2_latched[self] = true
+
+                    if key == "Velocity" and typeof(value) == "Vector3" then
+                        value = blacksmith_m2_stretch_velocity(value)
+                    end
+
+                    local result = old_newindex(self, key, value)
+
+                    -- If Velocity was assigned before MaxForce/P completed the signature,
+                    -- stretch the already-present value once at latch time.
+                    if key ~= "Velocity" then
+                        local current_velocity = self.Velocity
+                        if typeof(current_velocity) == "Vector3" then
+                            old_newindex(self, "Velocity", blacksmith_m2_stretch_velocity(current_velocity))
+                        end
+                    end
+
+                    return result
+                end
+
+                -- Once latched, stretch every game-written horizontal velocity phase.
+                if blacksmith_m2_latched[self]
+                    and key == "Velocity"
+                    and typeof(value) == "Vector3"
+                then
+                    value = blacksmith_m2_stretch_velocity(value)
+                end
+            end
+
+            return old_newindex(self, key, value)
+        end))
+    end
 
     local friends_file = "HYDROXIDE/friends.json"
     function cheat_client:save_friends()
@@ -9453,6 +9544,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Default = cheat_client.config.gelidus_boost
             })
 
+            group_combat_utils:AddToggle("BlacksmithM2Serum", {
+                Text = "Blacksmith M2 Serum",
+                Default = cheat_client.config.blacksmith_m2_serum
+            })
+
             group_combat_utils:AddSlider("GelidusBoostValue", {
                 Text = "Gelidus Speed",
                 Default = cheat_client.config.gelidus_boost_value or 103,
@@ -9672,6 +9768,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         cheat_client.stop_gelidus_boost()
                     end
                 end
+            end)
+
+            Toggles.BlacksmithM2Serum:OnChanged(function()
+                cheat_client.config.blacksmith_m2_serum = Toggles.BlacksmithM2Serum.Value
             end)
 
             Toggles.HoppaBoost:OnChanged(function()
