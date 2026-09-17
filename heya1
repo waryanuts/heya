@@ -29928,6 +29928,7 @@ end
                                 {position = Vector3.new(-1204.323, 326.691, 692.212), radius = 33, name = "Desert Mist", image = "https://i.imgur.com/U7sLdjN.png"},
                                 {position = Vector3.new(1273.000, 196.100, 808.800), radius = 44, name = "Super Illu Armor", image = "https://i.imgur.com/WSLgn2X.png"},
                                 {position = Vector3.new(1196.355, 199.368, -3250.123), radius = 33, name = "Ruins #8", image = "https://i.imgur.com/WznBeLu.png"},
+                                {position = Vector3.new(3211.294, 139.868, -2515.57), radius = 22, name = "Toliethand Room", image = "https://i.imgur.com/csz7qLY.png"},
 
 
 
