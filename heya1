@@ -1003,13 +1003,17 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
     -- intercepts those writes and stretches the complete horizontal velocity curve.
     -- It intentionally keeps the original P and MaxForce unchanged.
     do
-        local BLACKSMITH_M2_MULTIPLIER = 1.082
+        local BLACKSMITH_M2_MULTIPLIER = 1.08
         local BLACKSMITH_M2_MAXFORCE = Vector3.new(80000, 0, 80000)
         local BLACKSMITH_M2_FORCE_TOLERANCE = 2
         local BLACKSMITH_M2_P = 1250
         local BLACKSMITH_M2_P_TOLERANCE = 10
 
+        -- Per-mover state. We only stretch the real lunge phase, then permanently
+        -- stop touching that mover once it enters its low-speed tail/end phase.
         local blacksmith_m2_latched = setmetatable({}, {__mode = "k"})
+        local BLACKSMITH_M2_MAIN_START_SPEED = 60
+        local BLACKSMITH_M2_TAIL_CUTOFF_SPEED = 30
 
         local function blacksmith_m2_force_matches(value)
             return typeof(value) == "Vector3"
@@ -1023,13 +1027,32 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 and math.abs(value - BLACKSMITH_M2_P) <= BLACKSMITH_M2_P_TOLERANCE
         end
 
-        local function blacksmith_m2_stretch_velocity(value)
+        local function blacksmith_m2_stretch_velocity(value, state)
             if typeof(value) ~= "Vector3" then
                 return value
             end
 
             local horizontal = Vector3.new(value.X, 0, value.Z)
-            if horizontal.Magnitude <= 0.01 then
+            local speed = horizontal.Magnitude
+
+            if speed <= 0.01 or not state or state.tail_started then
+                return value
+            end
+
+            -- Do not touch any small pre-lunge/setup writes. The real Blacksmith
+            -- lunge is the high-speed phase (~83 studs/s from our debug).
+            if not state.main_seen then
+                if speed < BLACKSMITH_M2_MAIN_START_SPEED then
+                    return value
+                end
+                state.main_seen = true
+            end
+
+            -- Once the move drops into its ~23/~16 studs/s tail, stop modifying
+            -- the mover for the rest of its lifetime. This prevents the rare
+            -- little shove that could happen right at the end of the lunge.
+            if speed < BLACKSMITH_M2_TAIL_CUTOFF_SPEED then
+                state.tail_started = true
                 return value
             end
 
@@ -1055,32 +1078,42 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     and blacksmith_m2_force_matches(future_force)
                     and blacksmith_m2_p_matches(future_p)
                 then
-                    blacksmith_m2_latched[self] = true
+                    local state = {
+                        main_seen = false,
+                        tail_started = false,
+                    }
+                    blacksmith_m2_latched[self] = state
 
                     if key == "Velocity" and typeof(value) == "Vector3" then
-                        value = blacksmith_m2_stretch_velocity(value)
+                        value = blacksmith_m2_stretch_velocity(value, state)
                     end
 
                     local result = old_newindex(self, key, value)
 
                     -- If Velocity was assigned before MaxForce/P completed the signature,
-                    -- stretch the already-present value once at latch time.
+                    -- inspect the current value once at latch time.
                     if key ~= "Velocity" then
                         local current_velocity = self.Velocity
                         if typeof(current_velocity) == "Vector3" then
-                            old_newindex(self, "Velocity", blacksmith_m2_stretch_velocity(current_velocity))
+                            local stretched = blacksmith_m2_stretch_velocity(current_velocity, state)
+                            if stretched ~= current_velocity then
+                                old_newindex(self, "Velocity", stretched)
+                            end
                         end
                     end
 
                     return result
                 end
 
-                -- Once latched, stretch every game-written horizontal velocity phase.
-                if blacksmith_m2_latched[self]
+                local state = blacksmith_m2_latched[self]
+
+                -- Stretch only the actual lunge portion. Once the low-speed tail
+                -- begins, leave every remaining write completely untouched.
+                if state
                     and key == "Velocity"
                     and typeof(value) == "Vector3"
                 then
-                    value = blacksmith_m2_stretch_velocity(value)
+                    value = blacksmith_m2_stretch_velocity(value, state)
                 end
             end
 
