@@ -8009,7 +8009,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
     ]]
     cheat_client.cooldown_visualizer = (function()
         local moves = {
-            {"Wrathful Leap", "122649765707672", 0.164, 11.75},
+            {"Wrathful Leap", "122649765707672", 0.2, 11.75},
 
             -- Abyssal Scream: both the animation AND a newly-added NoAttack
             -- Accessory must be seen within 0.150s of the activation remote.
@@ -8017,13 +8017,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             {
                 name = "Abyssal Scream",
                 animation_id = "78577653668852",
-                animation_window = 0.150,
+                animation_window = 0.2,
                 cooldown_time = 15.8,
 
                 special = "instance_and_animation",
                 required_instance_name = "NoAttack",
                 required_instance_class = "Accessory",
-                required_instance_window = 0.150,
+                required_instance_window = 0.2,
             },
 
             -- Rift Dive:
