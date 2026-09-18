@@ -30108,6 +30108,8 @@ end
                                 {position = Vector3.new(1994.355, 139.362, -2099.123), radius = 22, name = "Stairs to ZScrooms", image = "https://i.imgur.com/nYkpzEJ.png"},
                                 {position = Vector3.new(3142.855, 150.868, -2486.123), radius = 22, name = "Top of Doctor", image = "https://i.imgur.com/XyWRu8t.png"},
                                 {position = Vector3.new(1903.5, 96.5, 1512.5), radius = 33, name = "Scroomville Corner", image = "https://i.imgur.com/SmjWUZA.png"},
+                                {position = Vector3.new(-56.952, 209.562, 2465.315), radius = 11, name = "Crate and Barrel", image = "https://i.imgur.com/fGLV6aM.png"},
+
 
 
 
