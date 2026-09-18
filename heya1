@@ -30110,6 +30110,7 @@ end
                                 {position = Vector3.new(1903.5, 96.5, 1512.5), radius = 33, name = "Scroomville Corner", image = "https://i.imgur.com/SmjWUZA.png"},
                                 {position = Vector3.new(-56.952, 209.562, 2465.315), radius = 11, name = "Crate and Barrel", image = "https://i.imgur.com/fGLV6aM.png"},
                                 {position = Vector3.new(-68.42, 203.159, 2364.938), radius = 22, name = "Eth Banker", image = "https://i.imgur.com/fWO98VD.png"},
+                                {position = Vector3.new(1740.5, 157.5, 849), radius = 44, name = "Basement Bookshelves", image = "https://i.imgur.com/qPySkxj.png"},
 
 
 
@@ -30138,6 +30139,7 @@ end
                                 {match = "Northern", image = "https://i.imgur.com/8ZxOcEu.png", send_data = false},
                                 {match = "the End", image = "https://i.imgur.com/MkYdXHr.png", send_data = false},
                                 {match = "The Crack", image = "https://i.imgur.com/OlKc4xS.png", send_data = false},
+                                {match = "Prince", image = "https://i.imgur.com/WcP0NLr.png", send_data = false},
                             }
 
                             local function detectArtifactArea()
