@@ -30192,6 +30192,37 @@ end
                                 return nil
                             end
 
+                            local ORIGINAL_ARTIFACT_THUMBNAIL = "https://static.wikia.nocookie.net/rogue-lineage/images/d/d8/PhiloRender.png/revision/latest?cb=20251012003300"
+                            local artifact_thumbnail_images = {
+                                ["Rift Gem"] = "https://i.imgur.com/cyaKy0q.png",
+                                ["Phoenix Down"] = "https://i.imgur.com/RnE8dVM.png",
+                                ["Mysterious Artifact"] = "https://i.imgur.com/HIdnxBe.png",
+                                ["Lannis Amulet"] = "https://i.imgur.com/APNKR8s.png",
+                                ["Lannis's Amulet"] = "https://i.imgur.com/APNKR8s.png",
+                                ["Amulet of the White King"] = "https://i.imgur.com/QfRrqiL.png",
+                                ["Night Stone"] = "https://i.imgur.com/wBHv9hq.png",
+                                ["Azael Horn"] = ORIGINAL_ARTIFACT_THUMBNAIL,
+                                ["Howler Friend"] = "https://i.imgur.com/DsT2Syd.png"
+                            }
+
+                            local function getArtifactThumbnail(names)
+                                if type(names) == "table" then
+                                    for _, artifact_name in ipairs(names) do
+                                        local thumbnail_url = artifact_thumbnail_images[artifact_name]
+                                        if thumbnail_url then
+                                            return thumbnail_url
+                                        end
+                                    end
+                                elseif type(names) == "string" then
+                                    local thumbnail_url = artifact_thumbnail_images[names]
+                                    if thumbnail_url then
+                                        return thumbnail_url
+                                    end
+                                end
+
+                                return ORIGINAL_ARTIFACT_THUMBNAIL
+                            end
+
                             local area = detectArtifactArea()
                             local custom_location_data = detectCustomArtifactLocation()
                             local custom_location = custom_location_data and custom_location_data.name or nil
@@ -30346,7 +30377,7 @@ end
                                 description = description,
                                 color = 0xff3679,
                                 thumbnail = {
-                                    url = "https://static.wikia.nocookie.net/rogue-lineage/images/d/d8/PhiloRender.png/revision/latest?cb=20251012003300"
+                                    url = getArtifactThumbnail(artifact_names)
                                 },
                                 image = artifact_location_image and {
                                     url = artifact_location_image
@@ -30430,7 +30461,7 @@ end
                                     description = description,
                                     color = 0xff3679,
                                     thumbnail = {
-                                        url = "https://static.wikia.nocookie.net/rogue-lineage/images/d/d8/PhiloRender.png/revision/latest?cb=20251012003300"
+                                        url = getArtifactThumbnail(unpicked_artifact_names)
                                     },
                                     image = artifact_location_image and {
                                         url = artifact_location_image
@@ -30464,7 +30495,7 @@ end
                                         description = log_description,
                                         color = 0xff3679,
                                         thumbnail = {
-                                            url = "https://static.wikia.nocookie.net/rogue-lineage/images/d/d8/PhiloRender.png/revision/latest?cb=20251012003300"
+                                            url = getArtifactThumbnail(artifact_names)
                                         },
                                         image = artifact_location_image and {
                                             url = artifact_location_image
