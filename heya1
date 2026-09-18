@@ -30202,24 +30202,51 @@ end
                                 ["Lannis Amulet"] = "https://i.imgur.com/APNKR8s.png",
                                 ["Lannis's Amulet"] = "https://i.imgur.com/APNKR8s.png",
                                 ["Amulet of the White King"] = "https://i.imgur.com/QfRrqiL.png",
+                                ["Amulet of The White King"] = "https://i.imgur.com/QfRrqiL.png",
                                 ["Night Stone"] = "https://i.imgur.com/wBHv9hq.png",
                                 ["Azael Horn"] = ORIGINAL_ARTIFACT_THUMBNAIL,
                                 ["Howler Friend"] = "https://i.imgur.com/DsT2Syd.png"
                             }
 
+                            -- Lower number = higher thumbnail priority when multiple artifacts
+                            -- are grouped into the same webhook embed.
+                            local artifact_thumbnail_priority = {
+                                ["Mysterious Artifact"] = 1,
+                                ["Rift Gem"] = 2,
+                                ["Amulet of the White King"] = 3,
+                                ["Amulet of The White King"] = 3,
+                                ["Azael Horn"] = 4,
+                                ["Lannis Amulet"] = 5,
+                                ["Lannis's Amulet"] = 5,
+                                ["Phoenix Down"] = 6,
+                                ["Night Stone"] = 7,
+                                ["Howler Friend"] = 8
+                            }
+
                             local function getArtifactThumbnail(names)
                                 if type(names) == "table" then
+                                    local best_thumbnail = nil
+                                    local best_priority = math.huge
+                                    local first_mapped_thumbnail = nil
+
                                     for _, artifact_name in ipairs(names) do
                                         local thumbnail_url = artifact_thumbnail_images[artifact_name]
                                         if thumbnail_url then
-                                            return thumbnail_url
+                                            -- Preserve the old behavior as a fallback for any mapped
+                                            -- artifact that is not explicitly present in the priority list.
+                                            first_mapped_thumbnail = first_mapped_thumbnail or thumbnail_url
+
+                                            local priority = artifact_thumbnail_priority[artifact_name]
+                                            if priority and priority < best_priority then
+                                                best_priority = priority
+                                                best_thumbnail = thumbnail_url
+                                            end
                                         end
                                     end
+
+                                    return best_thumbnail or first_mapped_thumbnail or ORIGINAL_ARTIFACT_THUMBNAIL
                                 elseif type(names) == "string" then
-                                    local thumbnail_url = artifact_thumbnail_images[names]
-                                    if thumbnail_url then
-                                        return thumbnail_url
-                                    end
+                                    return artifact_thumbnail_images[names] or ORIGINAL_ARTIFACT_THUMBNAIL
                                 end
 
                                 return ORIGINAL_ARTIFACT_THUMBNAIL
