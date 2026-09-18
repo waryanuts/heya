@@ -30067,7 +30067,7 @@ end
                                 {position = Vector3.new(6331.28, 1444.994, -225.31), radius = 150, name = "Above Ultra Blacksmith", image = "https://i.imgur.com/oEJEEzJ.png"},
                                 {position = Vector3.new(1618, 455.197, 2960), radius = 111, name = "Behind Big House", image = "https://i.imgur.com/T0sxXLr.png"},
                                 {position = Vector3.new(1520, 435.197, 3015), radius = 100, name = "Hidden Passage/Window Side", image = "https://i.imgur.com/VODYXZc.png"},
-                                {position = Vector3.new(739, 386.2, 2343), radius = 222, name = "Shore 1 Keep", image = "https://imgur.com/a/fUuloME"},
+                                {position = Vector3.new(739, 386.2, 2343), radius = 222, name = "Shore 1 Keep", image = "https://i.imgur.com/ovBZRC8.png"},
                                 {position = Vector3.new(-135.59, 206.695, 2453.478), radius = 70, name = "Main Hut", image = "https://i.imgur.com/bTB70kM.png"},
                                 {position = Vector3.new(-68.346, 206.1, 2416), radius = 33, name = "Cauldron Hut", image = "https://i.imgur.com/4tTpyGz.png"},
                                 {position = Vector3.new(6803.524, 1688.407, -160.381), radius = 45, name = "Peak of Castle Sanc", image = "https://i.imgur.com/9q9nkE6.png"},
