@@ -30028,7 +30028,7 @@ end
                                 {position = Vector3.new(6455.268, 1448.355, 25.891), radius = 33, name = "Castle Sanc Roof #5", image = "https://i.imgur.com/YSDvjWE.png"},
                                 {position = Vector3.new(6580, 1448.131, 28.217), radius = 33, name = "Castle Sanc Roof #6", image = "https://i.imgur.com/YSDvjWE.png"},
                                 {position = Vector3.new(6480, 1477.768, -251), radius = 15, name = "Castle Sanc Chimney", image = "https://i.imgur.com/FcRY4uy.png"},
-                                {position = Vector3.new(6836, 1407.793, -152), radius = 120, name = "Ultra Sigil Trainer", image = "https://i.imgur.com/YSDvjWE.png"},
+                                {position = Vector3.new(6836, 1407.793, -152), radius = 120, name = "Ultra Sigil Trainer", image = "https://i.imgur.com/0lYYMLM.png"},
                                 {position = Vector3.new(3181, 127.535, -2429.01), radius = 6, name = "Druid Trainer", image = "https://i.imgur.com/MP6NgrQ.png"},
                                 {position = Vector3.new(1054.855, 194.368, -3217), radius = 15, name = "Deepforest 2 button place", image = "https://i.imgur.com/SYVwvlF.png"},
                                 {position = Vector3.new(1091, 189.868, -3477), radius = 60, name = "Sunken Pit", image = "https://i.imgur.com/X5AlFeR.png"},
