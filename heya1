@@ -3951,7 +3951,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 pcall(function()
                     send_webhook(cheat_client.config.webhook, {
-                        username = cheat_client.config.webhook_username or "bladee",
+                        -- Discord uses the webhook\'s configured name automatically.
                         content = content
                     })
                 end)
@@ -3991,7 +3991,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 pcall(function()
                     send_webhook(webhook_url, {
-                        username = cheat_client.config.webhook_username or "bladee",
+                        -- Discord uses the webhook\'s configured name automatically.
                         content = content
                     })
                 end)
@@ -4170,7 +4170,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
 
                     local payload = {
-                        username = cheat_client.config.webhook_username or "bladee",
+                        -- Discord uses the webhook\'s configured name automatically.
                         content = content,
                         embeds = {{
                             title = "Banned Kick Detected",
@@ -17263,7 +17263,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             task.spawn(function()
                                 pcall(function()
                                     HXD_SEND_WEBHOOK(cheat_client.config.green_webhook, {
-                                        username = cheat_client.config.webhook_username or "bladee",
+                                        -- Discord uses the webhook\'s configured name automatically.
                                         embeds = {embed}
                                     })
                                 end)
@@ -17753,7 +17753,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 task.spawn(function()
                     pcall(function()
                         HXD_SEND_WEBHOOK(cheat_client.config.cr_alert_webhook, {
-                            username = cheat_client.config.webhook_username or "bladee",
+                            -- Discord uses the webhook\'s configured name automatically.
                             content = ping,
                             embeds = {embed}
                         })
@@ -20494,7 +20494,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             task.spawn(function()
                                 pcall(function()
                                     HXD_SEND_WEBHOOK(cheat_client.config.webhook, {
-                                        username = cheat_client.config.webhook_username or "bladee",
+                                        -- Discord uses the webhook\'s configured name automatically.
                                         embeds = {embed}
                                     })
                                 end)
@@ -20601,7 +20601,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         task.spawn(function()
                             pcall(function()
                                 HXD_SEND_WEBHOOK(cheat_client.config.webhook, {
-                                    username = cheat_client.config.webhook_username or "bladee",
+                                    -- Discord uses the webhook\'s configured name automatically.
                                     embeds = {embed}
                                 })
                             end)
@@ -22498,7 +22498,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                             task.spawn(function()
                                                 pcall(function()
                                                     HXD_SEND_WEBHOOK(cheat_client.config.webhook, {
-                                                        username = cheat_client.config.webhook_username or "bladee",
+                                                        -- Discord uses the webhook\'s configured name automatically.
                                                         embeds = {embed}
                                                     })
                                                 end)
@@ -24112,6 +24112,84 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             })
 
+            -- Resolve the actual Discord-configured name for each webhook URL.
+            -- We deliberately do NOT send a payload "username" override anymore, so
+            -- messages also appear under each webhook's real Discord name.
+            local webhook_name_labels = {}
+
+            local function get_discord_webhook_name(url)
+                if type(url) ~= "string" or not url:match("^https://discord.com/api/webhooks/%d+/%S+$") then
+                    return nil
+                end
+
+                local req = http_request or request or (syn and syn.request)
+                if not req then
+                    return nil
+                end
+
+                local ok, response = pcall(req, {
+                    Url = url,
+                    Method = "GET",
+                    Headers = {
+                        ["Content-Type"] = "application/json",
+                        ["Accept"] = "application/json"
+                    }
+                })
+
+                if not ok or type(response) ~= "table" then
+                    return nil
+                end
+
+                local status = response.StatusCode or response.statusCode or response.Status or 0
+                if status < 200 or status >= 300 then
+                    return nil
+                end
+
+                local body = response.Body or response.body
+                if type(body) ~= "string" or body == "" then
+                    return nil
+                end
+
+                local decoded_ok, data = pcall(function()
+                    return Services.HttpService:JSONDecode(body)
+                end)
+
+                if decoded_ok and type(data) == "table" and type(data.name) == "string" and data.name ~= "" then
+                    return data.name
+                end
+
+                return nil
+            end
+
+            local function refresh_webhook_name(key, url)
+                local label = webhook_name_labels[key]
+                if not label then
+                    return
+                end
+
+                if not url or url == "" then
+                    label:SetText("Discord Webhook Name: Not set")
+                    return
+                end
+
+                label:SetText("Discord Webhook Name: Loading...")
+
+                task.spawn(function()
+                    local resolved_name = get_discord_webhook_name(url)
+
+                    -- Ignore a stale lookup if the URL changed while the request was running.
+                    if cheat_client.config[key] ~= url then
+                        return
+                    end
+
+                    if resolved_name then
+                        label:SetText("Discord Webhook Name: " .. resolved_name)
+                    else
+                        label:SetText("Discord Webhook Name: Unable to resolve")
+                    end
+                end)
+            end
+
             group_ui:AddInput("webhook_url", {
                 Default = cheat_client.config.webhook,
                 Numeric = false,
@@ -24123,6 +24201,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if value and value ~= "" then
                         if value:match("^https://discord.com/api/webhooks/%d+/%S+$") then
                             cheat_client.config.webhook = value
+                            refresh_webhook_name("webhook", value)
 
                             local httpService = Services.HttpService
                             pcall(function()
@@ -24143,6 +24222,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
                     else
                         cheat_client.config.webhook = ""
+                        refresh_webhook_name("webhook", "")
 
                         local httpService = Services.HttpService
                         pcall(function()
@@ -24161,6 +24241,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
             })
+            webhook_name_labels.webhook = group_ui:AddLabel("Discord Webhook Name: Not set")
+            refresh_webhook_name("webhook", cheat_client.config.webhook)
 
             group_ui:AddInput("true_artifact_webhook_url", {
                 Default = cheat_client.config.true_artifact_webhook,
@@ -24173,6 +24255,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if value and value ~= "" then
                         if value:match("^https://discord.com/api/webhooks/%d+/%S+$") then
                             cheat_client.config.true_artifact_webhook = value
+                            refresh_webhook_name("true_artifact_webhook", value)
 
                             local httpService = Services.HttpService
                             pcall(function()
@@ -24193,6 +24276,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
                     else
                         cheat_client.config.true_artifact_webhook = ""
+                        refresh_webhook_name("true_artifact_webhook", "")
 
                         local httpService = Services.HttpService
                         pcall(function()
@@ -24211,6 +24295,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
             })
+            webhook_name_labels.true_artifact_webhook = group_ui:AddLabel("Discord Webhook Name: Not set")
+            refresh_webhook_name("true_artifact_webhook", cheat_client.config.true_artifact_webhook)
 
             group_ui:AddInput("cr_alert_webhook_url", {
                 Default = cheat_client.config.cr_alert_webhook,
@@ -24223,6 +24309,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if value and value ~= "" then
                         if value:match("^https://discord.com/api/webhooks/%d+/%S+$") then
                             cheat_client.config.cr_alert_webhook = value
+                            refresh_webhook_name("cr_alert_webhook", value)
 
                             local httpService = Services.HttpService
                             pcall(function()
@@ -24243,6 +24330,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
                     else
                         cheat_client.config.cr_alert_webhook = ""
+                        refresh_webhook_name("cr_alert_webhook", "")
 
                         local httpService = Services.HttpService
                         pcall(function()
@@ -24261,6 +24349,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
             })
+            webhook_name_labels.cr_alert_webhook = group_ui:AddLabel("Discord Webhook Name: Not set")
+            refresh_webhook_name("cr_alert_webhook", cheat_client.config.cr_alert_webhook)
 
             group_ui:AddInput("green_webhook_url", {
                 Default = cheat_client.config.green_webhook,
@@ -24273,6 +24363,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if value and value ~= "" then
                         if value:match("^https://discord.com/api/webhooks/%d+/%S+$") then
                             cheat_client.config.green_webhook = value
+                            refresh_webhook_name("green_webhook", value)
 
                             local httpService = Services.HttpService
                             pcall(function()
@@ -24293,6 +24384,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
                     else
                         cheat_client.config.green_webhook = ""
+                        refresh_webhook_name("green_webhook", "")
 
                         local httpService = Services.HttpService
                         pcall(function()
@@ -24311,6 +24403,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
             })
+            webhook_name_labels.green_webhook = group_ui:AddLabel("Discord Webhook Name: Not set")
+            refresh_webhook_name("green_webhook", cheat_client.config.green_webhook)
 
             group_ui:AddInput("data_webhook_url", {
                 Default = cheat_client.config.data_webhook,
@@ -24323,6 +24417,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if value and value ~= "" then
                         if value:match("^https://discord.com/api/webhooks/%d+/%S+$") then
                             cheat_client.config.data_webhook = value
+                            refresh_webhook_name("data_webhook", value)
 
                             local httpService = Services.HttpService
                             pcall(function()
@@ -24343,6 +24438,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
                     else
                         cheat_client.config.data_webhook = ""
+                        refresh_webhook_name("data_webhook", "")
 
                         local httpService = Services.HttpService
                         pcall(function()
@@ -24362,33 +24458,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             })
 
-            group_ui:AddInput("webhook_username", {
-                Default = cheat_client.config.webhook_username or "bladee",
-                Numeric = false,
-                Finished = false,
-                Text = "Webhook Username",
-                Tooltip = "Custom username for webhook messages (persists across serverhops)",
-                Placeholder = "bladee",
-                Callback = function(value)
-                    local username = (value and value ~= "") and value or "bladee"
-                    cheat_client.config.webhook_username = username
-
-                    local httpService = Services.HttpService
-                    pcall(function()
-                        local shared_settings = {}
-                        if mem:HasItem("shared_settings") then
-                            local success, loaded = pcall(function()
-                                return httpService:JSONDecode(mem:GetItem("shared_settings"))
-                            end)
-                            if success and loaded then
-                                shared_settings = loaded
-                            end
-                        end
-                        shared_settings.webhook_username = username
-                        mem:SetItem("shared_settings", httpService:JSONEncode(shared_settings))
-                    end)
-                end
-            })
+            webhook_name_labels.data_webhook = group_ui:AddLabel("Discord Webhook Name: Not set")
+            refresh_webhook_name("data_webhook", cheat_client.config.data_webhook)
 
             group_ui:AddButton({
                 Text = "Test Webhook",
@@ -24420,7 +24491,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                         print("[WEBHOOK DEBUG] Calling webhook with content:", content)
                         local res = send_webhook(cheat_client.config.webhook, {
-                            username = cheat_client.config.webhook_username or "bladee",
+                            -- Discord uses the webhook\'s configured name automatically.
                             content = content
                         })
                         print("[WEBHOOK DEBUG] Webhook returned:", res, type(res))
@@ -30557,7 +30628,7 @@ end
                                 local normal_embed = build_artifact_embed(normal_artifacts)
                                 pcall(function()
                                     HXD_SEND_WEBHOOK(cheat_client.config.webhook, {
-                                        username = cheat_client.config.webhook_username or "bladee",
+                                        -- Discord uses the webhook\'s configured name automatically.
                                         content = normal_webhook_msg,
                                         embeds = {normal_embed}
                                     })
@@ -30569,7 +30640,7 @@ end
                                 local true_embed = build_artifact_embed(true_artifacts)
                                 pcall(function()
                                     HXD_SEND_WEBHOOK(cheat_client.config.true_artifact_webhook, {
-                                        username = cheat_client.config.webhook_username or "bladee",
+                                        -- Discord uses the webhook\'s configured name automatically.
                                         content = true_artifact_webhook_msg,
                                         embeds = {true_embed}
                                     })
@@ -30595,7 +30666,7 @@ end
                                 task.spawn(function()
                                     pcall(function()
                                         HXD_SEND_WEBHOOK(cheat_client.config.data_webhook, {
-                                            username = cheat_client.config.webhook_username or "bladee",
+                                            -- Discord uses the webhook\'s configured name automatically.
                                             embeds = {data_embed}
                                         })
                                     end)
