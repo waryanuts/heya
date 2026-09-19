@@ -661,6 +661,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             status_frame_position = nil,
 
             webhook = "",
+            true_artifact_webhook = "",
             cr_alert_webhook = "",
             green_webhook = "",
             data_webhook = "",
@@ -7599,6 +7600,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             end
                         end
                         shared_settings.webhook = cheat_client.config.webhook or ""
+                        shared_settings.true_artifact_webhook = cheat_client.config.true_artifact_webhook or ""
                         shared_settings.cr_alert_webhook = cheat_client.config.cr_alert_webhook or ""
                         shared_settings.green_webhook = cheat_client.config.green_webhook or ""
                         shared_settings.data_webhook = cheat_client.config.data_webhook or ""
@@ -8114,6 +8116,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     cheat_client.config.webhook = shared_settings.webhook
                                     if library.Options and library.Options.webhook_url then
                                         library.Options.webhook_url:SetValue(shared_settings.webhook)
+                                    end
+                                end
+                                if shared_settings.true_artifact_webhook then
+                                    cheat_client.config.true_artifact_webhook = shared_settings.true_artifact_webhook
+                                    if library.Options and library.Options.true_artifact_webhook_url then
+                                        library.Options.true_artifact_webhook_url:SetValue(shared_settings.true_artifact_webhook)
                                     end
                                 end
                                 if shared_settings.cr_alert_webhook then
@@ -21042,6 +21050,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 Options.webhook_url:SetValue(shared_settings.webhook)
                             end
                         end
+                        if shared_settings.true_artifact_webhook then
+                            cheat_client.config.true_artifact_webhook = shared_settings.true_artifact_webhook
+                            if Options.true_artifact_webhook_url then
+                                Options.true_artifact_webhook_url:SetValue(shared_settings.true_artifact_webhook)
+                            end
+                        end
                         if shared_settings.cr_alert_webhook then
                             cheat_client.config.cr_alert_webhook = shared_settings.cr_alert_webhook
                             if Options.cr_alert_webhook_url then
@@ -24102,6 +24116,56 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 end
                             end
                             shared_settings.webhook = ""
+                            mem:SetItem("shared_settings", httpService:JSONEncode(shared_settings))
+                        end)
+                    end
+                end
+            })
+
+            group_ui:AddInput("true_artifact_webhook_url", {
+                Default = cheat_client.config.true_artifact_webhook,
+                Numeric = false,
+                Finished = false,
+                Text = "True Artifact Webhook URL (press enter to apply)",
+                Tooltip = "Only Mysterious Artifact, Rift Gem, Amulet of the White King, Lannis Amulet, Night Stone, and Howler Friend (persists across serverhops)",
+                Placeholder = "https://discord.com/api/webhooks/...",
+                Callback = function(value)
+                    if value and value ~= "" then
+                        if value:match("^https://discord.com/api/webhooks/%d+/%S+$") then
+                            cheat_client.config.true_artifact_webhook = value
+
+                            local httpService = Services.HttpService
+                            pcall(function()
+                                local shared_settings = {}
+                                if mem:HasItem("shared_settings") then
+                                    local success, loaded = pcall(function()
+                                        return httpService:JSONDecode(mem:GetItem("shared_settings"))
+                                    end)
+                                    if success and loaded then
+                                        shared_settings = loaded
+                                    end
+                                end
+                                shared_settings.true_artifact_webhook = value
+                                mem:SetItem("shared_settings", httpService:JSONEncode(shared_settings))
+                            end)
+                        else
+                            library:Notify("Invalid True Artifact webhook URL format!")
+                        end
+                    else
+                        cheat_client.config.true_artifact_webhook = ""
+
+                        local httpService = Services.HttpService
+                        pcall(function()
+                            local shared_settings = {}
+                            if mem:HasItem("shared_settings") then
+                                local success, loaded = pcall(function()
+                                    return httpService:JSONDecode(mem:GetItem("shared_settings"))
+                                end)
+                                if success and loaded then
+                                    shared_settings = loaded
+                                end
+                            end
+                            shared_settings.true_artifact_webhook = ""
                             mem:SetItem("shared_settings", httpService:JSONEncode(shared_settings))
                         end)
                     end
@@ -30368,61 +30432,106 @@ end
                             end
 
                             local server_name, server_region = get_server_info()
-                            local webhook_msg = "<@&1547048342226473000>"
+                            local normal_webhook_msg = "<@&1547048342226473000>"
+                            local true_artifact_webhook_msg = "<@&1550721541979775077>"
 
-                            local description = string.format("**Artifact%s:** %s\n",
-                                #artifact_names > 1 and "s" or "",
-                                artifact_list
-                            )
+                            -- These artifacts are reserved exclusively for the True Artifact webhook.
+                            -- They are filtered out of the original artifact webhook even when a batch
+                            -- contains both true artifacts and normal artifacts.
+                            local true_artifact_names = {
+                                ["Mysterious Artifact"] = true,
+                                ["Rift Gem"] = true,
+                                ["Amulet of the White King"] = true,
+                                ["Amulet of The White King"] = true,
+                                ["Lannis Amulet"] = true,
+                                ["Lannis's Amulet"] = true,
+                                ["Night Stone"] = true,
+                                ["Howler Friend"] = true,
+                            }
 
-                            if bot_running and nearest_point_index then
-                                description = description .. string.format("**Path:** %s\n", path_name)
-                                description = description .. string.format("**Point:** %d (%.0f studs)\n", nearest_point_index, nearest_point_distance)
+                            local normal_artifacts = {}
+                            local true_artifacts = {}
+                            for _, artifact_name in ipairs(artifact_names) do
+                                if true_artifact_names[artifact_name] then
+                                    table.insert(true_artifacts, artifact_name)
+                                else
+                                    table.insert(normal_artifacts, artifact_name)
+                                end
                             end
 
                             local artifact_position = first_object.Position
-                            description = description .. string.format("**Server:** `%s (%s)`\n\n",
-                                server_name ~= "" and server_name or "Unknown",
-                                server_region ~= "" and server_region or "Unknown"
-                            )
 
-                            -- Keep the player list as the final description section so the embed image renders directly below it.
-                            description = description .. string.format("> Castle Rock: %s\n", get_last_looted("cr"))
-                            description = description .. string.format("> Sunken: %s\n", get_last_looted("deepsunken"))
-                            description = description .. string.format("> Temple of Fire: %s\n\n", get_last_looted("temple"))
+                            local function build_artifact_embed(names)
+                                if #names == 0 then return nil end
 
-                            description = description .. string.format("**Players in Server: (%d/23)**\n", player_count) .. ( #player_names > 0 and table.concat(player_names, "\n") or "None" )
+                                local routed_artifact_list = table.concat(names, ", ")
+                                local description = string.format("**Artifact%s:** %s\n",
+                                    #names > 1 and "s" or "",
+                                    routed_artifact_list
+                                )
 
-                            local footer_text = string.format(
-                                "Job ID: %s | Position: %.3f, %.3f, %.3f",
-                                game.JobId,
-                                artifact_position.X,
-                                artifact_position.Y,
-                                artifact_position.Z
-                            )
+                                if bot_running and nearest_point_index then
+                                    description = description .. string.format("**Path:** %s\n", path_name)
+                                    description = description .. string.format("**Point:** %d (%.0f studs)\n", nearest_point_index, nearest_point_distance)
+                                end
 
-                            local embed = {
-                                title = string.format("%s%s | ARTIFACT FOUND", artifact_list, area_text),
-                                description = description,
-                                color = 0xff3679,
-                                thumbnail = {
-                                    url = getArtifactThumbnail(artifact_names)
-                                },
-                                image = artifact_location_image and {
-                                    url = artifact_location_image
-                                } or nil,
-                                footer = {
-                                    text = footer_text
-                                },
-                                timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
-                            }
+                                description = description .. string.format("**Server:** `%s (%s)`\n\n",
+                                    server_name ~= "" and server_name or "Unknown",
+                                    server_region ~= "" and server_region or "Unknown"
+                                )
 
-                            if cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
+                                -- Keep the player list as the final description section so the embed image renders directly below it.
+                                description = description .. string.format("> Castle Rock: %s\n", get_last_looted("cr"))
+                                description = description .. string.format("> Sunken: %s\n", get_last_looted("deepsunken"))
+                                description = description .. string.format("> Temple of Fire: %s\n\n", get_last_looted("temple"))
+
+                                description = description .. string.format("**Players in Server: (%d/23)**\n", player_count) .. ( #player_names > 0 and table.concat(player_names, "\n") or "None" )
+
+                                local footer_text = string.format(
+                                    "Job ID: %s | Position: %.3f, %.3f, %.3f",
+                                    game.JobId,
+                                    artifact_position.X,
+                                    artifact_position.Y,
+                                    artifact_position.Z
+                                )
+
+                                return {
+                                    title = string.format("%s%s | ARTIFACT FOUND", routed_artifact_list, area_text),
+                                    description = description,
+                                    color = 0xff3679,
+                                    thumbnail = {
+                                        url = getArtifactThumbnail(names)
+                                    },
+                                    image = artifact_location_image and {
+                                        url = artifact_location_image
+                                    } or nil,
+                                    footer = {
+                                        text = footer_text
+                                    },
+                                    timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
+                                }
+                            end
+
+                            -- Original artifact webhook: NEVER receives True Artifact items.
+                            if #normal_artifacts > 0 and cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
+                                local normal_embed = build_artifact_embed(normal_artifacts)
                                 pcall(function()
                                     HXD_SEND_WEBHOOK(cheat_client.config.webhook, {
                                         username = cheat_client.config.webhook_username or "bladee",
-                                        content = webhook_msg,
-                                        embeds = {embed}
+                                        content = normal_webhook_msg,
+                                        embeds = {normal_embed}
+                                    })
+                                end)
+                            end
+
+                            -- True Artifact webhook: ONLY receives the six reserved artifact types.
+                            if #true_artifacts > 0 and cheat_client.config.true_artifact_webhook and cheat_client.config.true_artifact_webhook ~= "" then
+                                local true_embed = build_artifact_embed(true_artifacts)
+                                pcall(function()
+                                    HXD_SEND_WEBHOOK(cheat_client.config.true_artifact_webhook, {
+                                        username = cheat_client.config.webhook_username or "bladee",
+                                        content = true_artifact_webhook_msg,
+                                        embeds = {true_embed}
                                     })
                                 end)
                             end
