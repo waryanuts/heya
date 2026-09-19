@@ -3957,6 +3957,45 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end)
             end
 
+            -- Routes artifact-related plain text messages to the same exclusive
+            -- destination as the artifact embed itself. True Artifacts never leak
+            -- into the original/main artifact webhook.
+            local true_artifact_plain_names = {
+                ["Mysterious Artifact"] = true,
+                ["Rift Gem"] = true,
+                ["Amulet of the White King"] = true,
+                ["Amulet of The White King"] = true,
+                ["Lannis Amulet"] = true,
+                ["Lannis's Amulet"] = true,
+                ["Night Stone"] = true,
+                ["Howler Friend"] = true,
+            }
+
+            function utility:artifact_plain_webhook(text, artifact_name)
+                local use_true_artifact_webhook = true_artifact_plain_names[artifact_name] == true
+                local webhook_url = use_true_artifact_webhook
+                    and cheat_client.config.true_artifact_webhook
+                    or cheat_client.config.webhook
+
+                if not webhook_url or webhook_url == "" then
+                    return
+                end
+
+                local content
+                if cheat_client.config.webhook_show_username ~= false then
+                    content = string.format("||[**%s**]|| %s", plr.Name, text)
+                else
+                    content = text
+                end
+
+                pcall(function()
+                    send_webhook(webhook_url, {
+                        username = cheat_client.config.webhook_username or "bladee",
+                        content = content
+                    })
+                end)
+            end
+
             -- Banned kick logger
             -- Captures the kick/disconnect reason and posts every player seen in the
             -- server at that moment to the configured main webhook.
@@ -20306,7 +20345,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 if kick_after_path then
                     library:Notify(string.format("Reached last point! Kicking for %s...", kick_trinket_name))
-                    utility:plain_webhook(string.format("Reached last point after picking up %s - Kicking now", kick_trinket_name))
+                    utility:artifact_plain_webhook(string.format("Reached last point after picking up %s - Kicking now", kick_trinket_name), kick_trinket_name)
                     task.wait(0.5)
                     plr:Kick(string.format("%s picked up (completed path to last point)", kick_trinket_name))
                     return
@@ -22645,7 +22684,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 kick_after_path = true
                                 kick_trinket_name = trinket_name
                                 print(string.format("[Kick on Trinket] MATCH FOUND: %s - will kick after reaching last point", obj.Name))
-                                utility:plain_webhook(string.format("%s found! Going to last point then kicking.", trinket_name))
+                                utility:artifact_plain_webhook(string.format("%s found! Going to last point then kicking.", trinket_name), trinket_name)
                                 library:Notify(string.format("%s found! Going to last point...", trinket_name))
                                 return
                             end
