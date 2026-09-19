@@ -30228,7 +30228,7 @@ end
                                 {match = "Sigma", image = "https://i.imgur.com/z4hntjV.png", send_data = false},
                                 {match = "the Sky", image = "https://i.imgur.com/p0MPHct.png", send_data = true},
                                 {match = "Snail", image = "https://i.imgur.com/d4w42MY.png", send_data = false},
-                                {match = "Temple of Fire", image = "https://i.imgur.com/DEbxHhg.png", send_data = true},
+                                {match = "Temple of Fire", image = "https://i.imgur.com/DEbxHhg.png", send_data = false},
                                 {match = "Flowerlight", image = "https://i.imgur.com/8KbMjfp.png", send_data = true},
                                 {match = "Deepforest Sanctuary", image = "https://i.imgur.com/GEFKPnX.png", send_data = false},
                                 {match = "Santorini", image = "https://i.imgur.com/7S5VMUN.png", send_data = true},
