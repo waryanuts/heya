@@ -465,6 +465,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             gelidus_boost = false,
             gelidus_boost_value = 103,
             blacksmith_m2_serum = false,
+            anti_grapple = false,
             hoppa_boost = false,
             foot_serum = false,
             foot_serum_value = 2.8,
@@ -1163,6 +1164,164 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             return old_newindex(self, key, value)
         end))
+    end
+
+    -- Anti Grapple
+    -- Event-driven so Grapple's BodyVelocity is removed before the next physics step.
+    -- Signature: direct child of local HRP, MaxForce ~= (1e6,1e6,1e6), Velocity.Y >= 25.
+    do
+        local ANTI_GRAPPLE_MAXFORCE = Vector3.new(1000000, 1000000, 1000000)
+        local ANTI_GRAPPLE_FORCE_TOLERANCE = 1
+        local ANTI_GRAPPLE_MIN_Y = 25
+
+        local anti_grapple_watched = setmetatable({}, {__mode = "k"})
+        local anti_grapple_hrp_connection = nil
+        local anti_grapple_character_connection = nil
+
+        local function anti_grapple_force_matches(force)
+            return typeof(force) == "Vector3"
+                and math.abs(force.X - ANTI_GRAPPLE_MAXFORCE.X) <= ANTI_GRAPPLE_FORCE_TOLERANCE
+                and math.abs(force.Y - ANTI_GRAPPLE_MAXFORCE.Y) <= ANTI_GRAPPLE_FORCE_TOLERANCE
+                and math.abs(force.Z - ANTI_GRAPPLE_MAXFORCE.Z) <= ANTI_GRAPPLE_FORCE_TOLERANCE
+        end
+
+        local function anti_grapple_matches(mover, hrp)
+            return cheat_client.config.anti_grapple
+                and mover
+                and mover.Parent == hrp
+                and mover:IsA("BodyVelocity")
+                and anti_grapple_force_matches(mover.MaxForce)
+                and typeof(mover.Velocity) == "Vector3"
+                and mover.Velocity.Y >= ANTI_GRAPPLE_MIN_Y
+        end
+
+        local function anti_grapple_try_destroy(mover, hrp)
+            if anti_grapple_matches(mover, hrp) then
+                mover:Destroy()
+                return true
+            end
+            return false
+        end
+
+        local function anti_grapple_watch_mover(mover, hrp)
+            if not mover:IsA("BodyVelocity") then
+                return
+            end
+
+            -- If Grapple parents an already-configured mover, kill it immediately.
+            if anti_grapple_try_destroy(mover, hrp) then
+                return
+            end
+
+            -- Grapple can parent first and assign MaxForce/Velocity immediately after.
+            -- Listen to both properties so we do not wait for Heartbeat/RenderStepped.
+            if anti_grapple_watched[mover] then
+                return
+            end
+            anti_grapple_watched[mover] = true
+
+            local maxforce_connection
+            local velocity_connection
+            local ancestry_connection
+
+            local function cleanup()
+                anti_grapple_watched[mover] = nil
+                if maxforce_connection then maxforce_connection:Disconnect() maxforce_connection = nil end
+                if velocity_connection then velocity_connection:Disconnect() velocity_connection = nil end
+                if ancestry_connection then ancestry_connection:Disconnect() ancestry_connection = nil end
+            end
+
+            local function check_now()
+                if not mover.Parent or mover.Parent ~= hrp then
+                    cleanup()
+                    return
+                end
+                if anti_grapple_try_destroy(mover, hrp) then
+                    cleanup()
+                end
+            end
+
+            maxforce_connection = mover:GetPropertyChangedSignal("MaxForce"):Connect(check_now)
+            velocity_connection = mover:GetPropertyChangedSignal("Velocity"):Connect(check_now)
+            ancestry_connection = mover.AncestryChanged:Connect(function(_, parent)
+                if parent ~= hrp then
+                    cleanup()
+                end
+            end)
+
+            -- Close the tiny race between the initial check and signal hookup.
+            check_now()
+        end
+
+        local function anti_grapple_bind_hrp(hrp)
+            if anti_grapple_hrp_connection then
+                anti_grapple_hrp_connection:Disconnect()
+                anti_grapple_hrp_connection = nil
+            end
+
+            if not hrp then
+                return
+            end
+
+            -- Catch anything that already exists when the toggle/character becomes active.
+            for _, child in ipairs(hrp:GetChildren()) do
+                anti_grapple_watch_mover(child, hrp)
+            end
+
+            -- This is the primary near-instant path. ChildAdded fires as soon as the
+            -- BodyVelocity enters HRP, before waiting for the next frame scan.
+            anti_grapple_hrp_connection = hrp.ChildAdded:Connect(function(child)
+                anti_grapple_watch_mover(child, hrp)
+            end)
+        end
+
+        function cheat_client.scan_anti_grapple()
+            if not cheat_client.config.anti_grapple then
+                return
+            end
+
+            local character = plr.Character
+            local hrp = character and FindFirstChild(character, "HumanoidRootPart")
+            if not hrp then
+                return
+            end
+
+            for _, mover in ipairs(hrp:GetChildren()) do
+                anti_grapple_watch_mover(mover, hrp)
+            end
+        end
+
+        local function anti_grapple_bind_character(character)
+            if not character then
+                anti_grapple_bind_hrp(nil)
+                return
+            end
+
+            local hrp = FindFirstChild(character, "HumanoidRootPart") or character:WaitForChild("HumanoidRootPart", 5)
+            anti_grapple_bind_hrp(hrp)
+        end
+
+        anti_grapple_character_connection = plr.CharacterAdded:Connect(function(character)
+            anti_grapple_bind_character(character)
+        end)
+
+        if shared and shared.connections then
+            shared.connections[#shared.connections + 1] = anti_grapple_character_connection
+        end
+
+        anti_grapple_bind_character(plr.Character)
+
+        -- PreSimulation is only a fallback. It runs before physics, unlike the old
+        -- Heartbeat scan, so even an unusual missed event is caught before movement.
+        local anti_grapple_fallback_connection = rs.PreSimulation:Connect(function()
+            if shared and not shared.is_unloading and cheat_client.config.anti_grapple then
+                cheat_client.scan_anti_grapple()
+            end
+        end)
+
+        if shared and shared.connections then
+            shared.connections[#shared.connections + 1] = anti_grapple_fallback_connection
+        end
     end
 
     local friends_file = "HYDROXIDE/friends.json"
@@ -9673,6 +9832,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Default = cheat_client.config.blacksmith_m2_serum
             })
 
+            group_combat_utils:AddToggle("AntiGrapple", {
+                Text = "Anti Grapple",
+                Default = cheat_client.config.anti_grapple
+            })
+
             group_combat_utils:AddSlider("GelidusBoostValue", {
                 Text = "Gelidus Speed",
                 Default = cheat_client.config.gelidus_boost_value or 103,
@@ -9896,6 +10060,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             Toggles.BlacksmithM2Serum:OnChanged(function()
                 cheat_client.config.blacksmith_m2_serum = Toggles.BlacksmithM2Serum.Value
+            end)
+
+            Toggles.AntiGrapple:OnChanged(function()
+                cheat_client.config.anti_grapple = Toggles.AntiGrapple.Value
+                if cheat_client.config.anti_grapple and cheat_client.scan_anti_grapple then
+                    cheat_client.scan_anti_grapple()
+                end
             end)
 
             Toggles.HoppaBoost:OnChanged(function()
