@@ -464,6 +464,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             no_stun = false,
             gelidus_boost = false,
             gelidus_boost_value = 103,
+            geli_fling = false,
+            geli_fling_value = 50,
             blacksmith_m2_serum = false,
             anti_grapple = false,
             hoppa_boost = false,
@@ -9848,16 +9850,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Default = cheat_client.config.gelidus_boost
             })
 
-            group_combat_utils:AddToggle("BlacksmithM2Serum", {
-                Text = "Blacksmith M2 Serum",
-                Default = cheat_client.config.blacksmith_m2_serum
-            })
-
-            group_combat_utils:AddToggle("AntiGrapple", {
-                Text = "Anti Grapple",
-                Default = cheat_client.config.anti_grapple
-            })
-
             group_combat_utils:AddSlider("GelidusBoostValue", {
                 Text = "Gelidus Speed",
                 Default = cheat_client.config.gelidus_boost_value or 103,
@@ -9868,6 +9860,34 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Callback = function(value)
                     cheat_client.config.gelidus_boost_value = value
                 end
+            })
+
+            group_combat_utils:AddToggle("GeliFling", {
+                Text = "Geli Fling",
+                Default = cheat_client.config.geli_fling,
+                Tooltip = "When enabled, press C during Gelidus to add the selected upward velocity without changing X/Z. 3 second cooldown."
+            })
+
+            group_combat_utils:AddSlider("GeliFlingValue", {
+                Text = "Geli Fling Power",
+                Default = cheat_client.config.geli_fling_value or 50,
+                Min = 50,
+                Max = 1000,
+                Rounding = 0,
+                Compact = true,
+                Callback = function(value)
+                    cheat_client.config.geli_fling_value = value
+                end
+            })
+
+            group_combat_utils:AddToggle("BlacksmithM2Serum", {
+                Text = "Blacksmith M2 Serum",
+                Default = cheat_client.config.blacksmith_m2_serum
+            })
+
+            group_combat_utils:AddToggle("AntiGrapple", {
+                Text = "Anti Grapple",
+                Default = cheat_client.config.anti_grapple
             })
 
             group_combat_utils:AddToggle("HoppaBoost", {
@@ -10077,6 +10097,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         cheat_client.stop_gelidus_boost()
                     end
                 end
+            end)
+
+            Toggles.GeliFling:OnChanged(function()
+                cheat_client.config.geli_fling = Toggles.GeliFling.Value
             end)
 
             Toggles.BlacksmithM2Serum:OnChanged(function()
@@ -26511,6 +26535,30 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 local fallData = args[1]
                                 local originalSeverity = fallData[severityIndex]
                                 local reductionPercent = math.clamp(cheat_client.config.fall_damage_reduction or 0, 0, 100)
+
+                                -- While the Gelidus ForwardVelocity is actively present on our HRP,
+                                -- force the EFFECTIVE fall-damage reduction to 80%. Do not overwrite
+                                -- the user's configured slider value; as soon as Gelidus ends, the
+                                -- original configured reduction is used again automatically.
+                                local character = plr.Character
+                                local root = character and FindFirstChild(character, "HumanoidRootPart")
+                                if root then
+                                    for _, mover in ipairs(root:GetChildren()) do
+                                        if mover:IsA("BodyVelocity")
+                                            and mover.Name == "ForwardVelocity"
+                                            and mover.MaxForce == Vector3.new(80000, 10, 80000)
+                                        then
+                                            local moverVelocity = mover.Velocity
+                                            if typeof(moverVelocity) == "Vector3"
+                                                and ((moverVelocity.X * moverVelocity.X) + (moverVelocity.Z * moverVelocity.Z)) > 0.0001
+                                            then
+                                                reductionPercent = 80
+                                                break
+                                            end
+                                        end
+                                    end
+                                end
+
                                 local multiplier = 1 - (reductionPercent / 100)
                                 local reducedSeverity = originalSeverity * multiplier
 
@@ -31212,16 +31260,88 @@ end
             local GELIDUS_MAX_SPEED = 92
             local GELIDUS_DEFAULT_SPEED = 103
             local GELIDUS_REQUIRED_MAXFORCE = Vector3.new(80000, 10, 80000)
+            local GELI_FLING_COOLDOWN = 3
 
             local gelidus_active = {}
+            local last_geli_fling_at = -math.huge
+
+            local function is_gelidus_velocity(obj)
+                return obj
+                    and obj:IsA("BodyVelocity")
+                    and obj.Name == "ForwardVelocity"
+                    and obj.MaxForce == GELIDUS_REQUIRED_MAXFORCE
+            end
 
             local function add_gelidus_velocity(obj)
-                if not obj:IsA("BodyVelocity") then return end
-                if obj.Name ~= "ForwardVelocity" then return end
-                if obj.MaxForce ~= GELIDUS_REQUIRED_MAXFORCE then return end
-
+                if not is_gelidus_velocity(obj) then return end
                 gelidus_active[obj] = true
             end
+
+            -- One-shot upward kick while a Gelidus ForwardVelocity is active.
+            -- IMPORTANT: do NOT write to the BodyVelocity itself here. Its Y MaxForce is
+            -- only 10, so changing BodyVelocity.Velocity.Y barely pushes upward, and
+            -- rewriting that mover can also interfere with Gelidus' horizontal curve.
+            -- Instead, directly add the configured Geli Fling power to the HRP's real
+            -- Y velocity while copying its current real X/Z exactly, so pressing C
+            -- cannot add horizontal speed.
+            local function geli_fling()
+                if not cheat_client.config.geli_fling then
+                    return false
+                end
+
+                local character = plr.Character
+                local root = character and FindFirstChild(character, "HumanoidRootPart")
+                if not root then
+                    return false
+                end
+
+                local gelidus_is_active = false
+                for _, obj in ipairs(root:GetChildren()) do
+                    if is_gelidus_velocity(obj) then
+                        local mover_velocity = obj.Velocity
+                        local horizontal = Vector3.new(mover_velocity.X, 0, mover_velocity.Z)
+                        if horizontal.Magnitude > 0.01 then
+                            gelidus_is_active = true
+                            break
+                        end
+                    end
+                end
+
+                if not gelidus_is_active then
+                    return false
+                end
+
+                local now = os.clock()
+                if now - last_geli_fling_at < GELI_FLING_COOLDOWN then
+                    return false
+                end
+
+                local actual_velocity = root.AssemblyLinearVelocity
+                local fling_power = math.clamp(tonumber(cheat_client.config.geli_fling_value) or 50, 50, 1000)
+                root.AssemblyLinearVelocity = Vector3.new(
+                    actual_velocity.X,
+                    actual_velocity.Y + fling_power,
+                    actual_velocity.Z
+                )
+                last_geli_fling_at = now
+
+                return true
+            end
+
+            cheat_client.geli_fling = geli_fling
+
+            -- Fixed Geli Fling activation key. The UI toggle only enables/disables it;
+            -- C performs the one-shot Y kick using the configured slider power while
+            -- the Gelidus mover is active.
+            utility:Connection(uis.InputBegan, function(input, processed)
+                if processed or uis:GetFocusedTextBox() then
+                    return
+                end
+
+                if input.KeyCode == Enum.KeyCode.C and cheat_client.config.geli_fling then
+                    geli_fling()
+                end
+            end)
 
             local function setup_gelidus_character(character)
                 if cheat_client.feature_connections.gelidus_boost_root_child_added then
