@@ -1170,13 +1170,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
     -- Anti Grapple
     -- Event-driven so Grapple's BodyVelocity is handled before the next physics step.
-    -- Signature: direct child of local HRP, MaxForce ~= (1e6,1e6,1e6), Velocity.Y >= 25.
+    -- Signature: direct child of local HRP, MaxForce ~= (1e6,1e6,1e6), Velocity.Y between 48 and 51.
     -- If Left Arm contains a child named "Bone", keep the mover but clamp it to (0,15,0).
     -- Otherwise, destroy the Grapple BodyVelocity as before.
     do
         local ANTI_GRAPPLE_MAXFORCE = Vector3.new(1000000, 1000000, 1000000)
         local ANTI_GRAPPLE_FORCE_TOLERANCE = 1
-        local ANTI_GRAPPLE_MIN_Y = 25
+        local ANTI_GRAPPLE_MIN_Y = 48
+        local ANTI_GRAPPLE_MAX_Y = 51
         local ANTI_GRAPPLE_BONE_VELOCITY = Vector3.new(0, 15, 0)
 
         local anti_grapple_watched = setmetatable({}, {__mode = "k"})
@@ -1198,6 +1199,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 and anti_grapple_force_matches(mover.MaxForce)
                 and typeof(mover.Velocity) == "Vector3"
                 and mover.Velocity.Y >= ANTI_GRAPPLE_MIN_Y
+                and mover.Velocity.Y <= ANTI_GRAPPLE_MAX_Y
         end
 
         local function anti_grapple_has_bone(hrp)
