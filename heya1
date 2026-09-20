@@ -1167,12 +1167,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
     end
 
     -- Anti Grapple
-    -- Event-driven so Grapple's BodyVelocity is removed before the next physics step.
+    -- Event-driven so Grapple's BodyVelocity is handled before the next physics step.
     -- Signature: direct child of local HRP, MaxForce ~= (1e6,1e6,1e6), Velocity.Y >= 25.
+    -- If Left Arm contains a child named "Bone", keep the mover but clamp it to (0,15,0).
+    -- Otherwise, destroy the Grapple BodyVelocity as before.
     do
         local ANTI_GRAPPLE_MAXFORCE = Vector3.new(1000000, 1000000, 1000000)
         local ANTI_GRAPPLE_FORCE_TOLERANCE = 1
         local ANTI_GRAPPLE_MIN_Y = 25
+        local ANTI_GRAPPLE_BONE_VELOCITY = Vector3.new(0, 15, 0)
 
         local anti_grapple_watched = setmetatable({}, {__mode = "k"})
         local anti_grapple_hrp_connection = nil
@@ -1195,12 +1198,26 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 and mover.Velocity.Y >= ANTI_GRAPPLE_MIN_Y
         end
 
-        local function anti_grapple_try_destroy(mover, hrp)
-            if anti_grapple_matches(mover, hrp) then
-                mover:Destroy()
-                return true
+        local function anti_grapple_has_bone(hrp)
+            local character = hrp and hrp.Parent
+            local left_arm = character and FindFirstChild(character, "Left Arm")
+            return left_arm and FindFirstChild(left_arm, "Bone") ~= nil
+        end
+
+        -- Returns "destroyed" when the mover is removed, "clamped" when Bone is
+        -- present and its velocity is forced to (0,15,0), or nil when it is not Grapple.
+        local function anti_grapple_handle(mover, hrp)
+            if not anti_grapple_matches(mover, hrp) then
+                return nil
             end
-            return false
+
+            if anti_grapple_has_bone(hrp) then
+                mover.Velocity = ANTI_GRAPPLE_BONE_VELOCITY
+                return "clamped"
+            end
+
+            mover:Destroy()
+            return "destroyed"
         end
 
         local function anti_grapple_watch_mover(mover, hrp)
@@ -1208,8 +1225,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return
             end
 
-            -- If Grapple parents an already-configured mover, kill it immediately.
-            if anti_grapple_try_destroy(mover, hrp) then
+            -- If Grapple parents an already-configured mover, handle it immediately.
+            -- Bone mode keeps it alive at (0,15,0), so continue watching in case
+            -- the game tries to write the Grapple velocity again.
+            local initial_result = anti_grapple_handle(mover, hrp)
+            if initial_result == "destroyed" then
                 return
             end
 
@@ -1236,7 +1256,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     cleanup()
                     return
                 end
-                if anti_grapple_try_destroy(mover, hrp) then
+                local result = anti_grapple_handle(mover, hrp)
+                if result == "destroyed" then
                     cleanup()
                 end
             end
