@@ -31338,7 +31338,7 @@ end
                     return
                 end
 
-                if input.KeyCode == Enum.KeyCode.C and cheat_client.config.geli_fling then
+                if input.KeyCode == Enum.KeyCode.X and cheat_client.config.geli_fling then
                     geli_fling()
                 end
             end)
