@@ -30468,6 +30468,7 @@ end
                                 {position = Vector3.new(5790.538, 1431.794, 860.062), radius = 77, name = "Top of Snail", image = "https://i.imgur.com/ps4dA0s.png"},
                                 {position = Vector3.new(4003, 443.794, -1017), radius = 160, name = "Snake Pit", image = "https://i.imgur.com/drErweo.png"},
                                 {position = Vector3.new(3208.855, 124.868, -2453.623), radius = 15, name = "Behind Crates", image = "https://i.imgur.com/2XATSr3.png"},
+                                {position = Vector3.new(3211.218, 137.269, -2490.138), radius = 15, name = "Top of Crates", image = "https://i.imgur.com/kbzILfk.png"},
                                 {position = Vector3.new(3270.355, 207.368, -2535.123), radius = 16, name = "Side of Inn", image = "https://i.imgur.com/e9HDhYp.png"},
                                 {position = Vector3.new(3340.355, 202.368, -2468.123), radius = 20, name = "Inn Beds", image = "https://i.imgur.com/O2ytyLr.png"},
                                 {position = Vector3.new(3060.355, 135.368, -2537.123), radius = 25, name = "Side of Turnip Shop", image = "https://i.imgur.com/pIOF2oI.png"},
