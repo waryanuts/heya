@@ -606,6 +606,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             no_fall = false,
             fall_damage_reducer = false,
             fall_damage_reduction = 95,
+            auto_knock = false,
+            auto_knock_severity = 50,
             no_killbrick = false,
             no_mob_trigger = false,
             freecam = false,
@@ -1001,6 +1003,408 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         connections = {},
         window_active = true,
     }
+
+    -- Auto Knock (Khei only)
+    -- H uses the learned fall-damage RemoteEvent immediately. If the remote has not
+    -- been observed yet for this character, H runs a temporary learning drop:
+    -- save the current CFrame, noclip the character, move 50 studs straight up, hold
+    -- that exact position for 2.5 seconds, then release it into a real gravity-driven
+    -- freefall. Noclip stays active until just above the saved position so intervening
+    -- geometry is ignored, then collision is restored for a genuine landing event.
+    -- Khei fall payload: {severity}, {}
+    if is_khei then
+        local auto_knock_fall_remote = nil
+        local auto_knock_bootstrap_busy = false
+
+        local AUTO_KNOCK_BOOTSTRAP_HEIGHT = 50
+        local AUTO_KNOCK_BOOTSTRAP_WAIT = 2.5
+        local AUTO_KNOCK_CAPTURE_GRACE = 0.25
+
+        local function auto_knock_notify(message)
+            pcall(function()
+                if library and library.Notify then
+                    library:Notify(message, 3)
+                else
+                    warn("[Auto Knock] " .. tostring(message))
+                end
+            end)
+        end
+
+        local function auto_knock_get_remotes_folder()
+            local character = plr.Character
+            if not character then
+                return nil
+            end
+
+            local handler = FindFirstChild(character, "CharacterHandler")
+            if not handler then
+                return nil
+            end
+
+            return FindFirstChild(handler, "Remotes")
+        end
+
+        local function auto_knock_count_keys(tbl, stop_after)
+            local count = 0
+            for _ in pairs(tbl) do
+                count += 1
+                if stop_after and count > stop_after then
+                    break
+                end
+            end
+            return count
+        end
+
+        local function auto_knock_remote_ready()
+            local remotes_folder = auto_knock_get_remotes_folder()
+            return typeof(auto_knock_fall_remote) == "Instance"
+                and auto_knock_fall_remote:IsA("RemoteEvent")
+                and remotes_folder
+                and auto_knock_fall_remote.Parent == remotes_folder
+        end
+
+        -- Passive learner: this is called from the existing FireServer hook before
+        -- No Fall / Fall Damage Reducer can swallow or rewrite the natural packet.
+        function cheat_client.capture_auto_knock_fall_remote(event, args, remotes_folder)
+            if not event or not remotes_folder or event.Parent ~= remotes_folder then
+                return false
+            end
+
+            if #args ~= 2 or typeof(args[1]) ~= "table" or typeof(args[2]) ~= "table" then
+                return false
+            end
+
+            local arg1_keys = auto_knock_count_keys(args[1], 2)
+            local arg2_keys = auto_knock_count_keys(args[2], 0)
+            if arg2_keys ~= 0 then
+                return false
+            end
+
+            if arg1_keys == 1 and typeof(args[1][1]) == "number" then
+                auto_knock_fall_remote = event
+                return true
+            end
+
+            return false
+        end
+
+        local function auto_knock_fire_packet(force_test)
+            if not force_test and not cheat_client.config.auto_knock then
+                return false
+            end
+
+            if not auto_knock_remote_ready() then
+                if force_test then
+                    auto_knock_notify("Auto Knock: fall remote is not learned yet. Press H once to learn it with the 50-stud real fall.")
+                end
+                return false
+            end
+
+            if type(old_remote) ~= "function" then
+                auto_knock_notify("Auto Knock: remote hook is not ready yet.")
+                return false
+            end
+
+            local severity = math.clamp(tonumber(cheat_client.config.auto_knock_severity) or 50, 1, 200)
+            local payload = {severity}
+
+            local ok, err = pcall(function()
+                -- Use the original FireServer directly so the intentional Auto Knock
+                -- packet is not blocked by No Fall or modified by Fall Damage Reducer.
+                old_remote(auto_knock_fall_remote, payload, {})
+            end)
+
+            if not ok then
+                auto_knock_notify("Auto Knock failed: " .. tostring(err))
+                return false
+            end
+
+            if force_test then
+                auto_knock_notify(string.format("Auto Knock test fired: Khei severity %.1f", severity))
+            end
+
+            return true
+        end
+
+        -- Only H invokes this bootstrap. It intentionally does not run on load/respawn.
+        -- While learning, the character is temporarily noclipped and held exactly
+        -- 50 studs above the saved position for 2.5 seconds. It is then released into
+        -- a real physics freefall. Temporary noclip ignores geometry until the root is
+        -- close to the saved Y, where collision is restored so Rogue sees a true landing.
+        local function auto_knock_learn_with_fall_then_fire()
+            if auto_knock_bootstrap_busy then
+                return
+            end
+
+            if not cheat_client.config.auto_knock then
+                return
+            end
+
+            if auto_knock_remote_ready() then
+                auto_knock_fire_packet(false)
+                return
+            end
+
+            local character = plr.Character
+            local root = character and FindFirstChild(character, "HumanoidRootPart")
+            local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
+
+            if not character or not root or not humanoid or humanoid.Health <= 0 then
+                auto_knock_notify("Auto Knock: character/root is not ready.")
+                return
+            end
+
+            auto_knock_bootstrap_busy = true
+
+            task.spawn(function()
+                local original_cframe = root.CFrame
+                local original_linear_velocity = root.AssemblyLinearVelocity
+                local original_angular_velocity = root.AssemblyAngularVelocity
+                local held_cframe = original_cframe + Vector3.new(0, AUTO_KNOCK_BOOTSTRAP_HEIGHT, 0)
+
+                -- Save each current part's collision state so this temporary noclip
+                -- does not overwrite the user's normal character configuration.
+                local collision_states = setmetatable({}, {__mode = "k"})
+                local hold_connection = nil
+                local descendant_connection = nil
+
+                local function noclip_part(part)
+                    if not part or not part:IsA("BasePart") then
+                        return
+                    end
+
+                    if collision_states[part] == nil then
+                        collision_states[part] = part.CanCollide
+                    end
+
+                    part.CanCollide = false
+                end
+
+                local function apply_test_noclip()
+                    if not character or not character.Parent then
+                        return
+                    end
+
+                    for _, object in ipairs(character:GetDescendants()) do
+                        if object:IsA("BasePart") then
+                            noclip_part(object)
+                        end
+                    end
+                end
+
+                local function stop_hold()
+                    if hold_connection then
+                        hold_connection:Disconnect()
+                        hold_connection = nil
+                    end
+
+                    if descendant_connection then
+                        descendant_connection:Disconnect()
+                        descendant_connection = nil
+                    end
+                end
+
+                local function restore_collision()
+                    for part, can_collide in pairs(collision_states) do
+                        if part and part.Parent and part:IsA("BasePart") then
+                            pcall(function()
+                                part.CanCollide = can_collide
+                            end)
+                        end
+                    end
+                    table.clear(collision_states)
+                end
+
+                auto_knock_notify("Auto Knock: learning fall remote...")
+
+                local moved = pcall(function()
+                    apply_test_noclip()
+
+                    descendant_connection = character.DescendantAdded:Connect(function(object)
+                        if object:IsA("BasePart") then
+                            noclip_part(object)
+                        end
+                    end)
+
+                    root.AssemblyLinearVelocity = Vector3.zero
+                    root.AssemblyAngularVelocity = Vector3.zero
+                    root.CFrame = held_cframe
+
+                    -- Put the humanoid into Freefall while we hold it in place so the
+                    -- game's normal landing/fall logic still sees an airborne phase.
+                    pcall(function()
+                        humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+                    end)
+
+                    hold_connection = rs.PreSimulation:Connect(function()
+                        if plr.Character ~= character or not root.Parent or humanoid.Health <= 0 then
+                            return
+                        end
+
+                        apply_test_noclip()
+                        root.CFrame = held_cframe
+                        root.AssemblyLinearVelocity = Vector3.zero
+                        root.AssemblyAngularVelocity = Vector3.zero
+                    end)
+                end)
+
+                if not moved then
+                    stop_hold()
+                    restore_collision()
+                    auto_knock_bootstrap_busy = false
+                    auto_knock_notify("Auto Knock: couldn't start the learning fall.")
+                    return
+                end
+
+                -- Stay suspended at +50 for the full test duration.
+                task.wait(AUTO_KNOCK_BOOTSTRAP_WAIT)
+                stop_hold()
+
+                -- Release into an ACTUAL gravity-driven fall rather than teleporting through
+                -- fake midpoint positions. This lets Humanoid/CharacterHandler observe a real
+                -- Freefall state and a naturally increasing downward AssemblyLinearVelocity.
+                local collision_restored_for_landing = false
+                local release_time = os.clock()
+                local MAX_REAL_FALL_TIME = 1.35
+                local RESTORE_COLLISION_HEIGHT = 7
+
+                if plr.Character == character and root.Parent == character then
+                    pcall(function()
+                        apply_test_noclip()
+                        root.CFrame = held_cframe
+                        root.AssemblyLinearVelocity = Vector3.new(0, -2, 0)
+                        root.AssemblyAngularVelocity = Vector3.zero
+                        humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+                    end)
+                end
+
+                -- Let Roblox gravity do the descent. Keep X/Z centered and noclip through
+                -- anything between +50 and the landing zone. At roughly +7 studs we restore
+                -- the exact previous collision states so the last part of the fall is a real
+                -- physical landing instead of a CFrame snap.
+                while plr.Character == character
+                    and root.Parent == character
+                    and humanoid.Health > 0
+                    and (os.clock() - release_time) < MAX_REAL_FALL_TIME
+                do
+                    local relative_y = root.Position.Y - original_cframe.Position.Y
+
+                    if not collision_restored_for_landing and relative_y <= RESTORE_COLLISION_HEIGHT then
+                        restore_collision()
+                        collision_restored_for_landing = true
+                    elseif not collision_restored_for_landing then
+                        apply_test_noclip()
+                    end
+
+                    -- Preserve the naturally-generated Y velocity, but kill horizontal drift
+                    -- so the character lands at the same X/Z it started from.
+                    local velocity = root.AssemblyLinearVelocity
+                    root.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
+                    root.AssemblyAngularVelocity = Vector3.zero
+
+                    -- Stop once normal collision has been restored and Roblox reports ground.
+                    if collision_restored_for_landing
+                        and humanoid.FloorMaterial ~= Enum.Material.Air
+                    then
+                        break
+                    end
+
+                    rs.Heartbeat:Wait()
+                end
+
+                -- Safety restore in case the fall timed out before reaching the landing zone.
+                if not collision_restored_for_landing then
+                    restore_collision()
+                    collision_restored_for_landing = true
+                end
+
+                -- Give CharacterHandler several real post-impact frames to emit the fall packet.
+                -- Exit early as soon as our FireServer hook captures it.
+                local landing_wait_started = os.clock()
+                while not auto_knock_remote_ready()
+                    and plr.Character == character
+                    and root.Parent == character
+                    and humanoid.Health > 0
+                    and (os.clock() - landing_wait_started) < 0.45
+                do
+                    rs.Heartbeat:Wait()
+                end
+
+                -- Put the player back EXACTLY where H was pressed after the genuine landing
+                -- window has completed, and restore their pre-test velocities.
+                pcall(function()
+                    if plr.Character == character and root.Parent == character then
+                        root.CFrame = original_cframe
+                        root.AssemblyLinearVelocity = original_linear_velocity
+                        root.AssemblyAngularVelocity = original_angular_velocity
+                    end
+                end)
+
+                task.wait(AUTO_KNOCK_CAPTURE_GRACE)
+
+                if not auto_knock_remote_ready() then
+                    auto_knock_bootstrap_busy = false
+                    auto_knock_notify("Auto Knock: fall remote was not captured. Press H to try the real learning fall again.")
+                    return
+                end
+
+                -- The learning drop itself can sometimes be enough to down the
+                -- character. Avoid sending a second packet if that already happened.
+                if cs:HasTag(character, "Knocked") or cs:HasTag(character, "Unconscious") then
+                    auto_knock_bootstrap_busy = false
+                    auto_knock_notify("Auto Knock: fall remote learned.")
+                    return
+                end
+
+                auto_knock_bootstrap_busy = false
+                auto_knock_fire_packet(false)
+            end)
+        end
+
+        function cheat_client.fire_auto_knock(force_test)
+            if force_test then
+                return auto_knock_fire_packet(true)
+            end
+
+            if not cheat_client.config.auto_knock then
+                return false
+            end
+
+            if auto_knock_remote_ready() then
+                return auto_knock_fire_packet(false)
+            end
+
+            auto_knock_learn_with_fall_then_fire()
+            return true
+        end
+
+        -- Fixed H keybind.
+        local auto_knock_input_connection = uis.InputBegan:Connect(function(input, game_processed)
+            if game_processed or (shared and shared.is_unloading) then
+                return
+            end
+
+            if uis:GetFocusedTextBox() then
+                return
+            end
+
+            if input.KeyCode == Enum.KeyCode.H then
+                cheat_client.fire_auto_knock(false)
+            end
+        end)
+
+        local auto_knock_character_connection = plr.CharacterAdded:Connect(function()
+            -- CharacterHandler.Remotes is recreated on respawn, so relearn lazily on
+            -- the next H press instead of scanning/probing anything automatically.
+            auto_knock_fall_remote = nil
+            auto_knock_bootstrap_busy = false
+        end)
+
+        if shared and shared.connections then
+            shared.connections[#shared.connections + 1] = auto_knock_input_connection
+            shared.connections[#shared.connections + 1] = auto_knock_character_connection
+        end
+    end
 
     -- Blacksmith M2 Serum
     -- The game repeatedly rewrites ForwardVelocity throughout the lunge, so this
@@ -10880,6 +11284,36 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     cheat_client.config.fall_damage_reduction = value
                 end
             })
+
+            if is_khei then
+                group_exploits:AddDivider()
+
+                group_exploits:AddToggle("auto_knock", {
+                    Text = "Auto Knock [H]",
+                    Default = cheat_client.config.auto_knock,
+                    Tooltip = "Khei only. Press H to Auto Knock. If the fall remote is unknown, H noclips you, holds you 50 studs up for 1.5s, then rapidly simulates the fall through +25 back to your original position.",
+                    Callback = function(value)
+                        cheat_client.config.auto_knock = value
+                    end
+                })
+
+                group_exploits:AddSlider("auto_knock_severity", {
+                    Text = "Auto Knock Test Severity",
+                    Default = cheat_client.config.auto_knock_severity,
+                    Min = 1,
+                    Max = 200,
+                    Rounding = 1,
+                    Callback = function(value)
+                        cheat_client.config.auto_knock_severity = value
+                    end
+                })
+
+                group_exploits:AddButton("Test Auto Knock", function()
+                    if cheat_client.fire_auto_knock then
+                        cheat_client.fire_auto_knock(true)
+                    end
+                end)
+            end
 
             group_exploits:AddDivider()
     
@@ -26557,6 +26991,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     -- Cooldown Visualizer only opens an activation window here.
                     -- The move is confirmed later by its animation.
                     cheat_client.cooldown_visualizer.handle_remote(Event, remotes_folder)
+
+                    -- Khei Auto Knock: learn the current character's obfuscated fall-damage RemoteEvent.
+                    if cheat_client.capture_auto_knock_fall_remote then
+                        cheat_client.capture_auto_knock_fall_remote(Event, args, remotes_folder)
+                    end
 
                     if shared and not mana_remote and remotes_folder and Event.Parent == remotes_folder then
                         if game.PlaceId == 14341521240 then
