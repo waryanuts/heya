@@ -5545,6 +5545,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     elseif (FindFirstChild(v, 'Mesh') and v.Mesh.MeshId == 'rbxassetid://%202877143560%20' and FindFirstChild(v, 'ParticleEmitter') and string.match(tostring(v.ParticleEmitter.Color), '0 1 1 1 0 1 1 1 1 0') and v.ClassName == 'Part' and v.Color.R > v.Color.G and v.Color.R > v.Color.B) then
                         return 'Ruby', cheat_client.trinket_colors.rare.Color, cheat_client.trinket_colors.rare.ZIndex
                     elseif (FindFirstChild(v, 'Mesh') and v.Mesh.MeshId == 'rbxassetid://%202877143560%20' and FindFirstChild(v, 'ParticleEmitter') and string.match(tostring(v.ParticleEmitter.Color), '0 1 1 1 0 1 1 1 1 0') and v.ClassName == 'Part' and v.Color.B > v.Color.G and v.Color.B > v.Color.R) then
+                        if v.Color == Color3.fromRGB(230,29,248) then
+                            return 'Rift Gem', cheat_client.trinket_colors.mythic.Color, cheat_client.trinket_colors.mythic.ZIndex
+                        end
                         return 'Sapphire', cheat_client.trinket_colors.rare.Color, cheat_client.trinket_colors.rare.ZIndex
                     elseif (v.ClassName == 'Part' and FindFirstChild(v, 'ParticleEmitter') and not string.match(tostring(v.ParticleEmitter.Color), '0 1 1 1 0 1 1 1 1 0')) then
                         return 'Rift Gem', cheat_client.trinket_colors.mythic.Color, cheat_client.trinket_colors.mythic.ZIndex
@@ -5590,6 +5593,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         elseif (v.ClassName == "MeshPart" and v.MeshId == "rbxassetid://%202877143560%20" and v.Color.R > v.Color.G and v.Color.R > v.Color.B) then
                             return 'Ruby', cheat_client.trinket_colors.rare.Color, cheat_client.trinket_colors.rare.ZIndex
                         elseif (v.ClassName == "MeshPart" and v.MeshId == "rbxassetid://%202877143560%20" and v.Color.B > v.Color.R and v.Color.B > v.Color.G) then
+                            if v.Color == Color3.fromRGB(230,29,248) then
+                                return 'Rift Gem', cheat_client.trinket_colors.mythic.Color, cheat_client.trinket_colors.mythic.ZIndex
+                            end
                             return 'Sapphire', cheat_client.trinket_colors.rare.Color, cheat_client.trinket_colors.rare.ZIndex
                         elseif (v.ClassName == "MeshPart" and v.MeshId == "rbxassetid://%202877143560%20" and tostring(v.Color) == '0.643137, 0.733333, 0.745098') then
                             return 'Diamond', cheat_client.trinket_colors.rare.Color, cheat_client.trinket_colors.rare.ZIndex
@@ -18375,13 +18381,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 local emergency_conditions = Options.EmergencyServerhopConditions and Options.EmergencyServerhopConditions.Value or {}
                 local emergency_item_ranges = {
                     ["Perflora"] = math.huge,
+                    ["Duobe"] = math.huge,
                     ["Opal Shard"] = 1200,
+                    ["Justice Spears"] = 850,
                     ["Fimbulvetr"] = 650,
                     ["Manus Dei"] = 650,
                     ["Telorum"] = 650,
                     ["Pebble"] = 650,
                     ["Vulnere"] = 500,
-                    ["Celeritas"] = 500,
+                    ["Celeritas"] = 600,
                 }
 
                 local function get_emergency_item_distance(tool_name, owner_player)
@@ -18805,12 +18813,22 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 humanoid:EquipTool(gate_in_backpack)
                             end
                         else
+                            local perflora_in_backpack = FindFirstChild(plr.Backpack, "Perflora")
+                            local perflora_equipped = FindFirstChild(plr.Character, "Perflora")
                             local pebble_in_backpack = FindFirstChild(plr.Backpack, "Pebble")
                             local pebble_equipped = FindFirstChild(plr.Character, "Pebble")
 
-                            if pebble_in_backpack and pebble_in_backpack:IsA("Tool") and not pebble_equipped then
+                            -- Perflora has priority over Pebble whenever both are available.
+                            if perflora_in_backpack and perflora_in_backpack:IsA("Tool") and not perflora_equipped then
+                                humanoid:EquipTool(perflora_in_backpack)
+                            elseif not perflora_in_backpack and not perflora_equipped
+                                and pebble_in_backpack and pebble_in_backpack:IsA("Tool") and not pebble_equipped
+                            then
                                 humanoid:EquipTool(pebble_in_backpack)
-                            elseif not pebble_in_backpack and not pebble_equipped and Toggles.ReequipGateInLoop and Toggles.ReequipGateInLoop.Value then
+                            elseif not perflora_in_backpack and not perflora_equipped
+                                and not pebble_in_backpack and not pebble_equipped
+                                and Toggles.ReequipGateInLoop and Toggles.ReequipGateInLoop.Value
+                            then
                                 local gate_in_backpack = FindFirstChild(plr.Backpack, "Gate")
                                 local gate_equipped = FindFirstChild(plr.Character, "Gate")
                                 if gate_in_backpack and not gate_equipped then
@@ -21078,8 +21096,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             group_trinket_bot:AddDropdown("EmergencyServerhopConditions", {
                 Text = "Emergency Serverhop Conditions",
-                Tooltip = "Equipped only: Perflora = infinite; Opal Shard = 1200; Fimbulvetr/Manus Dei/Telorum/Pebble = 650; Vulnere/Celeritas = 500 studs",
-                Values = {"Perflora", "Opal Shard", "Fimbulvetr", "Manus Dei", "Telorum", "Pebble", "Vulnere", "Celeritas"},
+                Tooltip = "Equipped only: Perflora/Duobe = infinite; Opal Shard = 1200; Justice Spears = 850; Fimbulvetr/Manus Dei/Telorum/Pebble = 650; Celeritas = 600; Vulnere = 500 studs",
+                Values = {"Perflora", "Duobe", "Opal Shard", "Justice Spears", "Fimbulvetr", "Manus Dei", "Telorum", "Pebble", "Vulnere", "Celeritas"},
                 Multi = true,
                 Default = {"Perflora", "Pebble", "Celeritas"},
                 Compact = true
@@ -22528,7 +22546,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             group_trinket_looping:AddToggle("HoldPebbleInLoop", {
                 Text = "Hold Pebble While Botting",
                 Default = cheat_client.config.hold_pebble_in_loop,
-                Tooltip = "Keeps Pebble equipped while looting; Gate automatically takes priority during gate attempts"
+                Tooltip = "Keeps Perflora equipped when available, otherwise Pebble; Gate automatically takes priority during gate attempts"
             })
 
             group_trinket_looping:AddToggle("AutoPopIdolOfWar", {
