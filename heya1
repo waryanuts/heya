@@ -1009,7 +1009,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
     -- H uses the learned fall-damage RemoteEvent immediately. If the remote has not
     -- been observed yet for this character, H runs a temporary learning drop:
     -- save the current CFrame, noclip the character, move 50 studs straight up, hold
-    -- that exact position for 2.5 seconds, then release it into a real gravity-driven
+    -- that exact position for 1.3 seconds, then release it into a real gravity-driven
     -- freefall. Noclip stays active until just above the saved position so intervening
     -- geometry is ignored, then collision is restored for a genuine landing event.
     -- Khei fall payload: {severity}, {}
@@ -1018,7 +1018,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         local auto_knock_bootstrap_busy = false
 
         local AUTO_KNOCK_BOOTSTRAP_HEIGHT = 50
-        local AUTO_KNOCK_BOOTSTRAP_WAIT = 2.5
+        local AUTO_KNOCK_BOOTSTRAP_WAIT = 1.3
         local AUTO_KNOCK_CAPTURE_GRACE = 0.25
 
         local function auto_knock_notify(message)
@@ -1106,7 +1106,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return false
             end
 
-            local severity = math.clamp(tonumber(cheat_client.config.auto_knock_severity) or 50, 1, 200)
+            local severity = math.clamp(tonumber(cheat_client.config.auto_knock_severity) or 50, 1, 270)
             local payload = {severity}
 
             local ok, err = pcall(function()
@@ -1129,7 +1129,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
         -- Only H invokes this bootstrap. It intentionally does not run on load/respawn.
         -- While learning, the character is temporarily noclipped and held exactly
-        -- 50 studs above the saved position for 2.5 seconds. It is then released into
+        -- 50 studs above the saved position for 1.3 seconds. It is then released into
         -- a real physics freefall. Temporary noclip ignores geometry until the root is
         -- close to the saved Y, where collision is restored so Rogue sees a true landing.
         local function auto_knock_learn_with_fall_then_fire()
@@ -11292,7 +11292,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 group_exploits:AddToggle("auto_knock", {
                     Text = "Auto Knock [H]",
                     Default = cheat_client.config.auto_knock,
-                    Tooltip = "Khei only. Press H to Auto Knock. If the fall remote is unknown, H noclips you, holds you 50 studs up for 1.5s, then rapidly simulates the fall through +25 back to your original position.",
+                    Tooltip = "Khei only. Press H to Auto Knock. If the fall remote is unknown, H noclips you, holds you 50 studs up for 1.3s, then releases you into the real learning fall before returning you to your original position.",
                     Callback = function(value)
                         cheat_client.config.auto_knock = value
                     end
@@ -11302,7 +11302,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     Text = "Auto Knock Test Severity",
                     Default = cheat_client.config.auto_knock_severity,
                     Min = 1,
-                    Max = 200,
+                    Max = 270,
                     Rounding = 1,
                     Callback = function(value)
                         cheat_client.config.auto_knock_severity = value
@@ -11325,6 +11325,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local PHOENIX_FLOWER_EQUIP_DELAY = 0.025
             local PHOENIX_FLOWER_USE_DELAY = 0.035
             local PHOENIX_FLOWER_RESCAN_DELAY = 0.05
+            local PHOENIX_FLOWER_MAX_RUN_TIME = 5
             local phoenix_flower_pop_running = false
 
             local function get_phoenix_flowers()
@@ -11372,11 +11373,17 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
 
                 phoenix_flower_pop_running = true
+                local run_started_at = os.clock()
 
                 while shared and not shared.is_unloading
                     and Toggles.pop_phoenix_flowers
                     and Toggles.pop_phoenix_flowers.Value
                 do
+                    if (os.clock() - run_started_at) >= PHOENIX_FLOWER_MAX_RUN_TIME then
+                        disable_pop_phoenix_flowers()
+                        break
+                    end
+
                     local character = plr.Character
                     local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
                     local backpack = plr:FindFirstChildOfClass("Backpack")
@@ -11393,6 +11400,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
 
                     for _, flower in ipairs(flowers) do
+                        if (os.clock() - run_started_at) >= PHOENIX_FLOWER_MAX_RUN_TIME then
+                            disable_pop_phoenix_flowers()
+                            break
+                        end
+
                         if not (Toggles.pop_phoenix_flowers and Toggles.pop_phoenix_flowers.Value) then
                             break
                         end
@@ -11437,7 +11449,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             group_exploits:AddToggle("pop_phoenix_flowers", {
                 Text = "Pop Phoenix Flowers",
                 Default = cheat_client.config.pop_phoenix_flowers,
-                Tooltip = "Rapidly equips and activates every Phoenix Flower, then turns itself off when none remain",
+                Tooltip = "Rapidly equips and activates Phoenix Flowers for up to 5 seconds, then turns itself off early if none remain",
                 Callback = function(value)
                     cheat_client.config.pop_phoenix_flowers = value
 
