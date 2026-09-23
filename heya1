@@ -608,6 +608,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             fall_damage_reduction = 95,
             auto_knock = false,
             auto_knock_severity = 50,
+            pop_phoenix_flowers = false,
             no_killbrick = false,
             no_mob_trigger = false,
             freecam = false,
@@ -11316,6 +11317,135 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             group_exploits:AddDivider()
+
+            -- Pop Phoenix Flowers
+            -- Rapidly equips and activates every Phoenix Flower currently in the
+            -- character/backpack. Once none remain, the toggle disables itself.
+            local PHOENIX_FLOWER_ITEM = "Phoenix Flower"
+            local PHOENIX_FLOWER_EQUIP_DELAY = 0.025
+            local PHOENIX_FLOWER_USE_DELAY = 0.035
+            local PHOENIX_FLOWER_RESCAN_DELAY = 0.05
+            local phoenix_flower_pop_running = false
+
+            local function get_phoenix_flowers()
+                local flowers = {}
+                local character = plr.Character
+                local backpack = plr:FindFirstChildOfClass("Backpack")
+
+                local function collect(container)
+                    if not container then
+                        return
+                    end
+
+                    for _, object in ipairs(container:GetChildren()) do
+                        if object:IsA("Tool") and object.Name == PHOENIX_FLOWER_ITEM then
+                            flowers[#flowers + 1] = object
+                        end
+                    end
+                end
+
+                collect(character)
+                collect(backpack)
+                return flowers
+            end
+
+            local function click_phoenix_flower()
+                pcall(function()
+                    vim:SendMouseButtonEvent(0, 0, 0, true, game, 1)
+                    task.wait(0.005)
+                    vim:SendMouseButtonEvent(0, 0, 0, false, game, 1)
+                end)
+            end
+
+            local function disable_pop_phoenix_flowers()
+                cheat_client.config.pop_phoenix_flowers = false
+
+                local toggle = Toggles.pop_phoenix_flowers
+                if toggle and toggle.Value then
+                    toggle:SetValue(false)
+                end
+            end
+
+            local function run_pop_phoenix_flowers()
+                if phoenix_flower_pop_running then
+                    return
+                end
+
+                phoenix_flower_pop_running = true
+
+                while shared and not shared.is_unloading
+                    and Toggles.pop_phoenix_flowers
+                    and Toggles.pop_phoenix_flowers.Value
+                do
+                    local character = plr.Character
+                    local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
+                    local backpack = plr:FindFirstChildOfClass("Backpack")
+
+                    if not character or not humanoid or humanoid.Health <= 0 or not backpack then
+                        task.wait(0.05)
+                        continue
+                    end
+
+                    local flowers = get_phoenix_flowers()
+                    if #flowers == 0 then
+                        disable_pop_phoenix_flowers()
+                        break
+                    end
+
+                    for _, flower in ipairs(flowers) do
+                        if not (Toggles.pop_phoenix_flowers and Toggles.pop_phoenix_flowers.Value) then
+                            break
+                        end
+
+                        character = plr.Character
+                        humanoid = character and FindFirstChildOfClass(character, "Humanoid")
+                        if not character or not humanoid or humanoid.Health <= 0 then
+                            break
+                        end
+
+                        if flower and flower.Parent and flower:IsA("Tool") then
+                            if flower.Parent ~= character then
+                                pcall(function()
+                                    humanoid:EquipTool(flower)
+                                end)
+                                task.wait(PHOENIX_FLOWER_EQUIP_DELAY)
+                            end
+
+                            -- Only click if this exact flower made it into the character.
+                            -- The short delay is just enough for the equip to register before
+                            -- immediately moving on to the next flower.
+                            if flower.Parent == character then
+                                click_phoenix_flower()
+                                task.wait(PHOENIX_FLOWER_USE_DELAY)
+                            end
+                        end
+                    end
+
+                    -- Give consumed tools a tiny replication window, then immediately
+                    -- rescan. Any flowers still present are retried on the next pass.
+                    task.wait(PHOENIX_FLOWER_RESCAN_DELAY)
+
+                    if #get_phoenix_flowers() == 0 then
+                        disable_pop_phoenix_flowers()
+                        break
+                    end
+                end
+
+                phoenix_flower_pop_running = false
+            end
+
+            group_exploits:AddToggle("pop_phoenix_flowers", {
+                Text = "Pop Phoenix Flowers",
+                Default = cheat_client.config.pop_phoenix_flowers,
+                Tooltip = "Rapidly equips and activates every Phoenix Flower, then turns itself off when none remain",
+                Callback = function(value)
+                    cheat_client.config.pop_phoenix_flowers = value
+
+                    if value and not phoenix_flower_pop_running then
+                        task.spawn(run_pop_phoenix_flowers)
+                    end
+                end
+            })
     
             do
                 group_character:AddToggle("instant_mine", {
