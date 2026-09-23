@@ -30912,7 +30912,7 @@ end
 
                             -- Data webhook: controlled per general-area fallback.
                             -- Exact/custom spots never send DATA. Unmatched areas collect DATA by default.
-                            if should_send_data and cheat_client.config.data_webhook and cheat_client.config.data_webhook ~= "" then
+                            if should_send_data and not is_khei and cheat_client.config.data_webhook and cheat_client.config.data_webhook ~= "" then
                                 local data_embed = {
                                     title = string.format("%s | DATA", artifact_list),
                                     description = string.format(
