@@ -10296,7 +10296,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         RectOffset = Vector2.zero,
                         RectSize = Vector2.zero,
                         ScaleType = Enum.ScaleType.Fit,
-                        Height = 96
+                        Height = 154
                     })
                     spotify_cover_image:SetVisible(false)
                 end
