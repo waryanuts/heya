@@ -16943,6 +16943,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             local proximity_warnings = {}
+            -- Last replicated positions used by the trinket bot's swept proximity checks.
+            -- The sweep only trusts per-update movement up to 200 studs so respawns/teleports
+            -- cannot create a fake radius crossing. The broad-phase boundary is padded by
+            -- 150-200 studs depending on the configured detection radius.
+            local proximity_sweep_samples = {}
+            local SWEEP_BOUNDARY_MIN = 150
+            local SWEEP_BOUNDARY_MAX = 200
+            local SWEEP_MAX_POSITION_STEP = 200
+
             local mana_initialized = false
             local emergency_gate_requested = nil
             local current_gate_section = 0
@@ -16953,6 +16962,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             utility:Connection(plrs.PlayerRemoving, function(player)
                 player_encounters[player.UserId] = nil
                 proximity_warnings[player.UserId] = nil
+                proximity_sweep_samples[player.UserId] = nil
             end)
 
             local function Get(value)
@@ -19241,180 +19251,273 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     table.insert(gnav_connections, player_added_conn)
                 end
 
-                proximity_connection = track_connection("proximity", utility:Connection(rs.Heartbeat, LPH_NO_VIRTUALIZE(function()
-                    if plr.Character and FindFirstChild(plr.Character, "HumanoidRootPart") then
-                        local bot_pos = plr.Character.HumanoidRootPart.Position
-                        local critical_distance = Options.CriticalDistance and Options.CriticalDistance.Value or 60
-                        local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
-
-                        if critical_distance > 0 and not critical_serverhop_sent and not stay_in_server then
-                            for _, other_player in next, plrs:GetPlayers() do
-                                if other_player ~= plr and other_player.Character and FindFirstChild(other_player.Character, "HumanoidRootPart") then
-                                    local distance = (other_player.Character.HumanoidRootPart.Position - bot_pos).Magnitude
-
-                                    if distance <= critical_distance then
-                                        critical_serverhop_sent = true
-                                        library:Notify(string.format("!! CRITICAL DANGER: Player %s within %.0f studs - immediate serverhop !!", other_player.Name, distance))
-                                        trinket_bot.path_running = false
-                                        SafeServerhop(string.format("Player %s within %.0f studs so am serverhopping instantly!!! (dangerously close)", other_player.Name, distance))
-                                        return
-                                    end
-                                end
-                            end
-
-                            if ws.Live then
-                                for _, child in pairs(ws.Live:GetChildren()) do
-                                    if child:IsA("Model") and string.match(child.Name, ".Shrieker") then
-                                        local shrieker_root = FindFirstChild(child, "HumanoidRootPart")
-                                        if shrieker_root then
-                                            local distance = (shrieker_root.Position - bot_pos).Magnitude
-                                            if distance <= critical_distance then
-                                                critical_serverhop_sent = true
-                                                library:Notify(string.format("!! CRITICAL DANGER: Shrieker within %.0f studs - immediate serverhop !!", distance))
-                                                trinket_bot.path_running = false
-                                                SafeServerhop(string.format("Shrieker within %.0f studs - serverhopping instantly!!! (necromancer attack)", distance))
-                                                return
-                                            end
-                                        end
-                                    end
-                                end
-                            end
-                        end
-
-                        if not ice_dragon_skip_index and trinket_bot.path_running then
-                            local iceDragon = ws:FindFirstChild("Ice Dragon")
-                            if iceDragon then
-                                local iceDragonRoot = FindFirstChild(iceDragon, "HumanoidRootPart")
-                                if iceDragonRoot then
-                                    local dragon_distance = (iceDragonRoot.Position - bot_pos).Magnitude
-                                    if dragon_distance <= 175 then
-                                        local current_index = 1
-                                        local min_dist = math.huge
-                                        for idx, pt in ipairs(trinket_bot.path_points) do
-                                            local dist = (pt.position - bot_pos).Magnitude
-                                            if dist < min_dist then
-                                                min_dist = dist
-                                                current_index = idx
-                                            end
-                                        end
-
-                                        for idx = current_index + 1, #trinket_bot.path_points do
-                                            local pt = trinket_bot.path_points[idx]
-                                            if pt then
-                                                if pt.is_gate_point then
-                                                    ice_dragon_skip_index = idx
-                                                    warn(string.format("Ice Dragon nearby! Skipping to gate point %d", idx))
-                                                    library:Notify(string.format("!! ICE DRAGON - skipping to gate point %d !!", idx))
-                                                    break
-                                                end
-                                                local dist_from_dragon = (pt.position - iceDragonRoot.Position).Magnitude
-                                                if dist_from_dragon >= 100 then
-                                                    ice_dragon_skip_index = idx
-                                                    warn(string.format("Ice Dragon nearby! Skipping to point %d (%.0f studs from dragon)", idx, dist_from_dragon))
-                                                    library:Notify(string.format("!! ICE DRAGON - skipping to point %d !!", idx))
-                                                    break
-                                                end
-                                            end
-                                        end
-                                    end
-                                end
-                            end
-                        end
+                local function swept_segment_distance(relative_start, relative_finish)
+                    local segment = relative_finish - relative_start
+                    local length_sq = segment:Dot(segment)
+                    if length_sq <= 0.0001 then
+                        return relative_finish.Magnitude, 1
                     end
 
-                    local proximity_check_distance = get_proximity_distance()
-                    local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
-                    if stay_in_server or proximity_check_distance == 0 then
-                        return
-                    end
+                    local t = math.clamp(-relative_start:Dot(segment) / length_sq, 0, 1)
+                    local closest = relative_start + (segment * t)
+                    return closest.Magnitude, t
+                end
 
-                    if shared.is_unloading or not trinket_bot.path_running then
-                        return
-                    end
-
-                    if not plr.Character or not FindFirstChild(plr.Character, "HumanoidRootPart") then
-                        return
-                    end
-
-                    local bot_pos = plr.Character.HumanoidRootPart.Position
-                    if emergency_gate_in_progress then
-                        return
-                    end
-
-                    local now = tick()
+                local function build_swept_player_samples(bot_root, critical_distance, proximity_distance)
+                    local results = {}
+                    local bot_pos = bot_root.Position
+                    local max_radius = math.max(tonumber(critical_distance) or 0, tonumber(proximity_distance) or 0)
+                    local boundary_padding = math.clamp(max_radius, SWEEP_BOUNDARY_MIN, SWEEP_BOUNDARY_MAX)
 
                     for _, other_player in next, plrs:GetPlayers() do
-                        if other_player ~= plr and other_player.Character and FindFirstChild(other_player.Character, "HumanoidRootPart") then
-                            local distance = (other_player.Character.HumanoidRootPart.Position - bot_pos).Magnitude
-                            local state = proximity_warnings[other_player.UserId]
+                        if other_player ~= plr and other_player.Character then
+                            local other_root = FindFirstChild(other_player.Character, "HumanoidRootPart")
+                            if other_root then
+                                local other_pos = other_root.Position
+                                local current_distance = (other_pos - bot_pos).Magnitude
+                                local swept_distance = current_distance
+                                local swept_t = 1
+                                local sweep_valid = false
 
-                            if distance <= proximity_check_distance then
-                                local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
+                                local previous = proximity_sweep_samples[other_player.UserId]
+                                if previous
+                                    and previous.bot_root == bot_root
+                                    and previous.other_root == other_root
+                                then
+                                    local bot_step = (bot_pos - previous.bot_pos).Magnitude
+                                    local player_step = (other_pos - previous.other_pos).Magnitude
+                                    local previous_distance = (previous.other_pos - previous.bot_pos).Magnitude
 
-                                if stay_in_server then
-                                    if not state then
-                                        proximity_warnings[other_player.UserId] = {
-                                            firstSeen = now,
-                                            lastSeen = now,
-                                            lastNotified = now
-                                        }
-                                        library:Notify(string.format("Stay in server enabled - ignoring player %s nearby", other_player.Name))
-                                    else
-                                        state.lastSeen = now
+                                    -- Ignore discontinuous teleports/respawns. For normal replication,
+                                    -- perform a true relative-motion segment sweep when either endpoint
+                                    -- is inside the configured radius + the 150-200 stud boundary band.
+                                    if max_radius > 0
+                                        and bot_step <= SWEEP_MAX_POSITION_STEP
+                                        and player_step <= SWEEP_MAX_POSITION_STEP
+                                        and math.min(previous_distance, current_distance) <= (max_radius + boundary_padding)
+                                    then
+                                        local relative_start = previous.other_pos - previous.bot_pos
+                                        local relative_finish = other_pos - bot_pos
+                                        swept_distance, swept_t = swept_segment_distance(relative_start, relative_finish)
+                                        sweep_valid = true
                                     end
-                                else
-                                    if not state then
-                                        proximity_warnings[other_player.UserId] = {
-                                            firstSeen = now,
-                                            lastSeen = now,
-                                            lastNotified = now
-                                        }
-                                    else
-                                        state.lastSeen = now
-                                    end
+                                end
 
-                                    if not emergency_gate_requested then
-                                        local encounter_data = player_encounters[other_player.UserId]
-                                        if not encounter_data then
-                                            player_encounters[other_player.UserId] = {
-                                                first_section = current_gate_section,
-                                                encounter_count = 1
-                                            }
-                                            library:Notify(string.format("Player %s detected within %d studs (first encounter)", other_player.Name, math.floor(proximity_check_distance)))
+                                results[other_player.UserId] = {
+                                    player = other_player,
+                                    current_distance = current_distance,
+                                    swept_distance = swept_distance,
+                                    swept_t = swept_t,
+                                    sweep_valid = sweep_valid,
+                                }
 
-                                            emergency_gate_requested = {
-                                                action = "gate_next",
-                                                player_name = other_player.Name
-                                            }
-                                        elseif encounter_data.first_section ~= current_gate_section then
-                                            encounter_data.encounter_count = encounter_data.encounter_count + 1
-                                            library:Notify(string.format("REPEAT encounter with %s - immediate serverhop (encounter #%d)", other_player.Name, encounter_data.encounter_count))
+                                proximity_sweep_samples[other_player.UserId] = {
+                                    bot_root = bot_root,
+                                    other_root = other_root,
+                                    bot_pos = bot_pos,
+                                    other_pos = other_pos,
+                                }
+                            end
+                        end
+                    end
+
+                    return results
+                end
+
+                local function get_effective_sample_distance(sample, radius)
+                    if not sample then
+                        return math.huge, false
+                    end
+
+                    local current_distance = sample.current_distance or math.huge
+                    local swept_distance = sample.swept_distance or current_distance
+                    local effective_distance = math.min(current_distance, swept_distance)
+                    local swept_hit = sample.sweep_valid
+                        and current_distance > radius
+                        and swept_distance <= radius
+
+                    return effective_distance, swept_hit
+                end
+
+                local function handle_priority_proximity_sample(sample, proximity_check_distance, now)
+                    if not sample or not sample.player then
+                        return false
+                    end
+
+                    local other_player = sample.player
+                    local effective_distance, swept_hit = get_effective_sample_distance(sample, proximity_check_distance)
+                    local state = proximity_warnings[other_player.UserId]
+
+                    if effective_distance > proximity_check_distance then
+                        if state and now - state.lastSeen > 3 then
+                            proximity_warnings[other_player.UserId] = nil
+                        end
+                        return false
+                    end
+
+                    if not state then
+                        state = {
+                            firstSeen = now,
+                            lastSeen = now,
+                            lastNotified = now
+                        }
+                        proximity_warnings[other_player.UserId] = state
+                    else
+                        state.lastSeen = now
+                    end
+
+                    if not emergency_gate_requested then
+                        local encounter_data = player_encounters[other_player.UserId]
+                        local sweep_suffix = swept_hit and string.format(" [swept crossing %.0f -> %.0f studs]", sample.swept_distance, sample.current_distance) or ""
+
+                        if not encounter_data then
+                            player_encounters[other_player.UserId] = {
+                                first_section = current_gate_section,
+                                encounter_count = 1
+                            }
+                            library:Notify(string.format("Player %s detected within %d studs%s (first encounter)", other_player.Name, math.floor(proximity_check_distance), sweep_suffix))
+
+                            -- Set this immediately from the Heartbeat priority pass. The main path
+                            -- loop already aborts its waits when this becomes non-nil.
+                            emergency_gate_requested = {
+                                action = "gate_next",
+                                player_name = other_player.Name,
+                                swept = swept_hit,
+                                detected_distance = effective_distance,
+                            }
+                        elseif encounter_data.first_section ~= current_gate_section then
+                            encounter_data.encounter_count = encounter_data.encounter_count + 1
+                            library:Notify(string.format("REPEAT encounter with %s%s - immediate serverhop (encounter #%d)", other_player.Name, sweep_suffix, encounter_data.encounter_count))
+                            trinket_bot.path_running = false
+                            SafeServerhop(string.format("Repeat encounter with %s%s", other_player.Name, sweep_suffix))
+                            return true
+                        else
+                            library:Notify(string.format("Player %s still in same section%s - emergency gating", other_player.Name, sweep_suffix))
+                            emergency_gate_requested = {
+                                action = "gate_next",
+                                player_name = other_player.Name,
+                                swept = swept_hit,
+                                detected_distance = effective_distance,
+                            }
+                        end
+                    elseif state.lastNotified and now - state.lastNotified >= 3 then
+                        library:Notify(string.format("Player %s still within %d studs (emergency gate pending)", other_player.Name, math.floor(proximity_check_distance)))
+                        state.lastNotified = now
+                    end
+
+                    return false
+                end
+
+                proximity_connection = track_connection("proximity", utility:Connection(rs.Heartbeat, LPH_NO_VIRTUALIZE(function()
+                    if not plr.Character then
+                        return
+                    end
+
+                    local bot_root = FindFirstChild(plr.Character, "HumanoidRootPart")
+                    if not bot_root then
+                        return
+                    end
+
+                    local bot_pos = bot_root.Position
+                    local critical_distance = Options.CriticalDistance and Options.CriticalDistance.Value or 60
+                    local proximity_check_distance = get_proximity_distance()
+                    local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
+
+                    -- Build one frame-consistent distance snapshot. Both Critical Distance and
+                    -- Proximity Check use the same current + swept distances so neither can miss
+                    -- a fast 150-200 stud boundary crossing between replicated position updates.
+                    local distance_samples = build_swept_player_samples(bot_root, critical_distance, proximity_check_distance)
+
+                    if critical_distance > 0 and not critical_serverhop_sent and not stay_in_server then
+                        for _, sample in pairs(distance_samples) do
+                            local effective_distance, swept_hit = get_effective_sample_distance(sample, critical_distance)
+                            if effective_distance <= critical_distance then
+                                critical_serverhop_sent = true
+                                local other_player = sample.player
+                                local sweep_suffix = swept_hit and string.format(" [swept %.0f -> %.0f studs]", sample.swept_distance, sample.current_distance) or ""
+                                library:Notify(string.format("!! CRITICAL DANGER: Player %s within %.0f studs%s - immediate serverhop !!", other_player.Name, effective_distance, sweep_suffix))
+                                trinket_bot.path_running = false
+                                SafeServerhop(string.format("Player %s crossed critical %.0f-stud range%s - serverhopping instantly", other_player.Name, critical_distance, sweep_suffix))
+                                return
+                            end
+                        end
+
+                        if ws.Live then
+                            for _, child in pairs(ws.Live:GetChildren()) do
+                                if child:IsA("Model") and string.match(child.Name, ".Shrieker") then
+                                    local shrieker_root = FindFirstChild(child, "HumanoidRootPart")
+                                    if shrieker_root then
+                                        local distance = (shrieker_root.Position - bot_pos).Magnitude
+                                        if distance <= critical_distance then
+                                            critical_serverhop_sent = true
+                                            library:Notify(string.format("!! CRITICAL DANGER: Shrieker within %.0f studs - immediate serverhop !!", distance))
                                             trinket_bot.path_running = false
-                                            SafeServerhop(string.format("Repeat encounter with %s", other_player.Name))
+                                            SafeServerhop(string.format("Shrieker within %.0f studs - serverhopping instantly!!! (necromancer attack)", distance))
                                             return
-                                        else
-                                            library:Notify(string.format("Player %s still in same section - emergency gating", other_player.Name))
-                                            emergency_gate_requested = {
-                                                action = "gate_next",
-                                                player_name = other_player.Name
-                                            }
-                                        end
-                                    else
-                                        if state and state.lastNotified and now - state.lastNotified >= 3 then
-                                            library:Notify(string.format("Player %s still within %d studs (emergency gate pending)", other_player.Name, math.floor(proximity_check_distance)))
-                                            state.lastNotified = now
                                         end
                                     end
                                 end
-                            else
-                                if state and now - state.lastSeen > 3 then
-                                    proximity_warnings[other_player.UserId] = nil
+                            end
+                        end
+                    end
+
+                    -- Priority proximity pass: do this before ice-dragon/path-side work so the
+                    -- emergency request is visible to every wait/loop as soon as this Heartbeat
+                    -- observes the crossing. This removes the old extra handoff delay.
+                    if not stay_in_server
+                        and proximity_check_distance > 0
+                        and trinket_bot.path_running
+                        and not shared.is_unloading
+                        and not emergency_gate_in_progress
+                    then
+                        local now = tick()
+                        for _, sample in pairs(distance_samples) do
+                            if handle_priority_proximity_sample(sample, proximity_check_distance, now) then
+                                return
+                            end
+                        end
+                    end
+
+                    if not ice_dragon_skip_index and trinket_bot.path_running then
+                        local iceDragon = ws:FindFirstChild("Ice Dragon")
+                        if iceDragon then
+                            local iceDragonRoot = FindFirstChild(iceDragon, "HumanoidRootPart")
+                            if iceDragonRoot then
+                                local dragon_distance = (iceDragonRoot.Position - bot_pos).Magnitude
+                                if dragon_distance <= 175 then
+                                    local current_index = 1
+                                    local min_dist = math.huge
+                                    for idx, pt in ipairs(trinket_bot.path_points) do
+                                        local dist = (pt.position - bot_pos).Magnitude
+                                        if dist < min_dist then
+                                            min_dist = dist
+                                            current_index = idx
+                                        end
+                                    end
+
+                                    for idx = current_index + 1, #trinket_bot.path_points do
+                                        local pt = trinket_bot.path_points[idx]
+                                        if pt then
+                                            if pt.is_gate_point then
+                                                ice_dragon_skip_index = idx
+                                                warn(string.format("Ice Dragon nearby! Skipping to gate point %d", idx))
+                                                library:Notify(string.format("!! ICE DRAGON - skipping to gate point %d !!", idx))
+                                                break
+                                            end
+                                            local dist_from_dragon = (pt.position - iceDragonRoot.Position).Magnitude
+                                            if dist_from_dragon >= 100 then
+                                                ice_dragon_skip_index = idx
+                                                warn(string.format("Ice Dragon nearby! Skipping to point %d (%.0f studs from dragon)", idx, dist_from_dragon))
+                                                library:Notify(string.format("!! ICE DRAGON - skipping to point %d !!", idx))
+                                                break
+                                            end
+                                        end
+                                    end
                                 end
                             end
                         end
                     end
                 end)))
-
 
                 local trinkets_list = {}
                 for _,object in next, ws:GetChildren() do
