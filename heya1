@@ -10236,9 +10236,1007 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             Misc = window:AddTab("Misc", "settings"),
             Botting = window:AddTab("Botting", "bot"),
             Macros = window:AddTab("Macros", "play"),
+            Spotify = window:AddTab("Spotify", "music"),
             Interface = window:AddTab("Interface", "monitor"),
             Config = window:AddTab("Config", "save")
         }
+
+        do
+            -- Spotify integration (direct Web API + HYDROXIDE/Spotify.json)
+            -- spotify_auth.py owns OAuth/refreshing and writes Spotify.json.
+            -- The hub never polls Spotify.json during normal playback. After the user
+            -- connects once, it lightly checks Spotify playback state every 3 seconds so
+            -- changes made in the real Spotify app (song/play/pause/repeat) appear here.
+            -- Track progress still advances locally between those checks.
+            local group_spotify_auth = Tabs.Spotify:AddLeftGroupbox("Spotify Connection")
+            local group_spotify_player = Tabs.Spotify:AddRightGroupbox("Now Playing")
+
+            local spotify_http = Services.HttpService
+            local spotify_file = "HYDROXIDE/Spotify.json"
+            local spotify_token = ""
+            local spotify_rejected_token = ""
+            local spotify_is_playing = false
+            local spotify_poll_busy = false
+            local spotify_connected = false
+            local spotify_recovery_busy = false
+            local spotify_token_expiry_serial = 0
+            local spotify_refresh_player
+
+            local spotify_duration_ms = 0
+            local spotify_anchor_progress_ms = 0
+            local spotify_anchor_clock = os.clock()
+            local spotify_setting_progress = true
+            local spotify_setting_loop = true
+            local spotify_setting_volume = true
+            local spotify_volume_supported = true
+            local spotify_volume_serial = 0
+            local spotify_user_volume_until = 0
+            local spotify_seek_serial = 0
+            local spotify_user_seeking_until = 0
+            local spotify_cover_url = ""
+            local spotify_cover_serial = 0
+
+            local spotify_status_label = group_spotify_auth:AddLabel("SpotifyStatus", {
+                Text = "Not Connected",
+                DoesWrap = false
+            })
+
+            -- Obsidian supports image elements. Spotify cover art is downloaded only
+            -- when the currently playing item changes, then loaded as a local custom asset.
+            -- If the executor does not expose getcustomasset/getsynasset, the rest of the
+            -- Spotify controls continue working and the artwork simply stays hidden.
+            local spotify_cover_image = nil
+            pcall(function()
+                if type(group_spotify_player.AddImage) == "function" then
+                    spotify_cover_image = group_spotify_player:AddImage("SpotifyCover", {
+                        Image = "rbxasset://textures/ui/GuiImagePlaceholder.png",
+                        Transparency = 0,
+                        BackgroundTransparency = 1,
+                        Color = Color3.new(1, 1, 1),
+                        RectOffset = Vector2.zero,
+                        RectSize = Vector2.zero,
+                        ScaleType = Enum.ScaleType.Fit,
+                        Height = 96
+                    })
+                    spotify_cover_image:SetVisible(false)
+                end
+            end)
+
+            local spotify_song_label = group_spotify_player:AddLabel("SpotifySong", {
+                Text = "Song: Nothing playing",
+                DoesWrap = true
+            })
+
+            local spotify_artist_label = group_spotify_player:AddLabel("SpotifyArtist", {
+                Text = "Artist: -",
+                DoesWrap = true
+            })
+
+            local spotify_playback_label = group_spotify_player:AddLabel("SpotifyPlayback", {
+                Text = "Playback: -",
+                DoesWrap = false
+            })
+
+            local spotify_time_label = group_spotify_player:AddLabel("SpotifyTime", {
+                Text = "0:00 / 0:00",
+                DoesWrap = false
+            })
+
+            local function spotify_clean_token(value)
+                value = tostring(value or "")
+                value = value:gsub("^%s+", ""):gsub("%s+$", "")
+                value = value:gsub("^[Bb][Ee][Aa][Rr][Ee][Rr]%s+", "")
+                return value
+            end
+
+            local function spotify_format_ms(ms)
+                ms = math.max(0, tonumber(ms) or 0)
+                local total_seconds = math.floor(ms / 1000)
+                local minutes = math.floor(total_seconds / 60)
+                local seconds = total_seconds % 60
+                return string.format("%d:%02d", minutes, seconds)
+            end
+
+            local function spotify_set_status(message)
+                pcall(function()
+                    spotify_status_label:SetText(tostring(message))
+                end)
+            end
+
+            local function spotify_hide_cover()
+                spotify_cover_url = ""
+                spotify_cover_serial += 1
+
+                if spotify_cover_image then
+                    pcall(function()
+                        spotify_cover_image:SetVisible(false)
+                    end)
+                end
+            end
+
+            local function spotify_cover_from_item(item)
+                if type(item) ~= "table" then
+                    return ""
+                end
+
+                local images = nil
+                if type(item.album) == "table" and type(item.album.images) == "table" then
+                    images = item.album.images
+                elseif type(item.images) == "table" then
+                    images = item.images
+                elseif type(item.show) == "table" and type(item.show.images) == "table" then
+                    images = item.show.images
+                end
+
+                if type(images) == "table" then
+                    -- Spotify orders cover images widest-first. Use the first valid URL;
+                    -- ScaleType.Fit keeps the artwork uncropped.
+                    for _, image_info in ipairs(images) do
+                        if type(image_info) == "table" and type(image_info.url) == "string" and image_info.url ~= "" then
+                            return image_info.url
+                        end
+                    end
+                end
+
+                return ""
+            end
+
+            local function spotify_update_cover(item)
+                local cover_url = spotify_cover_from_item(item)
+
+                if cover_url == "" then
+                    spotify_hide_cover()
+                    return
+                end
+
+                if cover_url == spotify_cover_url then
+                    return
+                end
+
+                spotify_cover_url = cover_url
+                spotify_cover_serial += 1
+                local this_serial = spotify_cover_serial
+
+                if not spotify_cover_image then
+                    return
+                end
+
+                local custom_asset = getcustomasset or getsynasset
+                if type(custom_asset) ~= "function" or type(writefile) ~= "function" then
+                    pcall(function()
+                        spotify_cover_image:SetVisible(false)
+                    end)
+                    return
+                end
+
+                pcall(function()
+                    spotify_cover_image:SetVisible(false)
+                end)
+
+                task.spawn(function()
+                    local body = nil
+                    local req = http_request or request or (syn and syn.request)
+
+                    if req then
+                        local ok_request, response = pcall(req, {
+                            Url = cover_url,
+                            Method = "GET"
+                        })
+
+                        if ok_request and type(response) == "table" then
+                            local status_code = tonumber(
+                                response.StatusCode or response.statusCode or response.Status or response.status
+                            ) or 0
+                            local response_body = response.Body or response.body
+
+                            if (status_code == 0 or (status_code >= 200 and status_code < 300))
+                                and type(response_body) == "string"
+                                and #response_body > 0
+                            then
+                                body = response_body
+                            end
+                        end
+                    end
+
+                    -- Fallback for executors whose request wrapper does not return a body.
+                    if not body then
+                        local ok_httpget, response_body = pcall(function()
+                            return game:HttpGet(cover_url, true)
+                        end)
+                        if ok_httpget and type(response_body) == "string" and #response_body > 0 then
+                            body = response_body
+                        end
+                    end
+
+                    if this_serial ~= spotify_cover_serial or not body then
+                        return
+                    end
+
+                    local item_id = ""
+                    if type(item) == "table" then
+                        item_id = tostring(item.id or "")
+                    end
+                    item_id = item_id:gsub("[^%w%-_]", "")
+                    if item_id == "" then
+                        item_id = tostring(this_serial)
+                    end
+
+                    local cover_file = "HYDROXIDE/spotify_cover_" .. item_id .. ".jpg"
+                    local wrote = pcall(function()
+                        writefile(cover_file, body)
+                    end)
+                    if not wrote or this_serial ~= spotify_cover_serial then
+                        return
+                    end
+
+                    local ok_asset, asset = pcall(custom_asset, cover_file)
+                    if not ok_asset
+                        or type(asset) ~= "string"
+                        or asset == ""
+                        or this_serial ~= spotify_cover_serial
+                    then
+                        return
+                    end
+
+                    pcall(function()
+                        spotify_cover_image:SetImage(asset)
+                        spotify_cover_image:SetVisible(true)
+                    end)
+                end)
+            end
+
+            local function spotify_update_progress_ui(progress_ms, duration_ms)
+                progress_ms = math.max(0, tonumber(progress_ms) or 0)
+                duration_ms = math.max(0, tonumber(duration_ms) or 0)
+
+                local percent = 0
+                if duration_ms > 0 then
+                    percent = math.clamp((progress_ms / duration_ms) * 100, 0, 100)
+                end
+                percent = math.floor(percent + 0.5)
+
+                spotify_setting_progress = true
+                pcall(function()
+                    if Options.SpotifyProgress then
+                        Options.SpotifyProgress:SetValue(percent)
+                    end
+                end)
+                spotify_setting_progress = false
+
+                pcall(function()
+                    spotify_time_label:SetText(
+                        spotify_format_ms(progress_ms) .. " / " .. spotify_format_ms(duration_ms)
+                    )
+                end)
+            end
+
+            local function spotify_anchor_progress(progress_ms, duration_ms)
+                spotify_anchor_progress_ms = math.max(0, tonumber(progress_ms) or 0)
+                spotify_duration_ms = math.max(0, tonumber(duration_ms) or 0)
+                spotify_anchor_clock = os.clock()
+                spotify_update_progress_ui(spotify_anchor_progress_ms, spotify_duration_ms)
+            end
+
+            local function spotify_set_loop_ui(enabled)
+                spotify_setting_loop = true
+                pcall(function()
+                    if Toggles.SpotifyLoopSong then
+                        Toggles.SpotifyLoopSong:SetValue(enabled == true)
+                    end
+                end)
+                spotify_setting_loop = false
+            end
+
+            local function spotify_set_volume_ui(volume_percent, supports_volume)
+                if supports_volume ~= nil then
+                    spotify_volume_supported = supports_volume == true
+                end
+
+                volume_percent = tonumber(volume_percent)
+                if volume_percent == nil then
+                    return
+                end
+
+                -- Don't let the 3-second external sync fight the user's slider while
+                -- they are actively dragging/changing it.
+                if os.clock() < spotify_user_volume_until then
+                    return
+                end
+
+                local rounded = math.clamp(math.floor(volume_percent + 0.5), 0, 100)
+                spotify_setting_volume = true
+                pcall(function()
+                    if Options.SpotifyVolume then
+                        Options.SpotifyVolume:SetValue(rounded)
+                    end
+                end)
+                spotify_setting_volume = false
+            end
+
+            local function spotify_make_file_if_missing()
+                if not (isfile and readfile and writefile) then
+                    spotify_set_status("Executor file functions are unavailable")
+                    return false
+                end
+
+                if isfile(spotify_file) then
+                    return true
+                end
+
+                local default_data = {
+                    access_token = "",
+                    refresh_token = "",
+                    expires_at = 0,
+                    token_type = "Bearer",
+                    scope = "user-read-playback-state user-modify-playback-state"
+                }
+
+                local ok, encoded = pcall(function()
+                    return spotify_http:JSONEncode(default_data)
+                end)
+                if not ok then
+                    spotify_set_status("Could not create Spotify.json")
+                    return false
+                end
+
+                local wrote = pcall(function()
+                    writefile(spotify_file, encoded)
+                end)
+                if not wrote then
+                    spotify_set_status("Could not write Spotify.json")
+                    return false
+                end
+
+                spotify_set_status("Spotify.json created - run spotify_auth.py")
+                return true
+            end
+
+            local function spotify_read_file()
+                if not spotify_make_file_if_missing() then
+                    return nil
+                end
+
+                local ok_read, raw = pcall(readfile, spotify_file)
+                if not ok_read or type(raw) ~= "string" or raw == "" then
+                    return nil
+                end
+
+                local ok_decode, data = pcall(function()
+                    return spotify_http:JSONDecode(raw)
+                end)
+                if not ok_decode or type(data) ~= "table" then
+                    spotify_set_status("Spotify.json is invalid")
+                    return nil
+                end
+
+                return data
+            end
+
+            -- Normal operation never polls Spotify.json. It is read on load, when the
+            -- user presses Refresh Spotify, before playback commands, and briefly after
+            -- a token actually expires/gets rejected. Recovery checks at most 5 times.
+            local spotify_wait_for_changed_token
+            local spotify_schedule_expiry_watch
+
+            spotify_wait_for_changed_token = function(previous_token)
+                previous_token = spotify_clean_token(previous_token)
+
+                if spotify_recovery_busy then
+                    return false
+                end
+
+                spotify_recovery_busy = true
+                spotify_connected = false
+                spotify_set_status("Not Connected - checking Spotify.json for refreshed token...")
+
+                for attempt = 1, 5 do
+                    if shared and shared.is_unloading then
+                        break
+                    end
+
+                    local data = spotify_read_file()
+                    if data then
+                        local candidate = spotify_clean_token(data.access_token)
+                        local expires_at = tonumber(data.expires_at) or 0
+                        local still_valid = expires_at <= 0 or expires_at > (os.time() + 2)
+
+                        if candidate ~= "" and candidate ~= previous_token and still_valid then
+                            spotify_token = candidate
+                            spotify_rejected_token = ""
+                            spotify_connected = false
+                            spotify_recovery_busy = false
+
+                            if spotify_schedule_expiry_watch then
+                                spotify_schedule_expiry_watch(expires_at, candidate)
+                            end
+
+                            spotify_set_status("New token found - reconnecting...")
+                            return true
+                        end
+                    end
+
+                    if attempt < 5 then
+                        task.wait(0.50)
+                    end
+                end
+
+                spotify_recovery_busy = false
+                if spotify_token == previous_token then
+                    spotify_token = ""
+                end
+                spotify_set_status("Not Connected - token unchanged after 5 checks")
+                return false
+            end
+
+            spotify_schedule_expiry_watch = function(expires_at, watched_token)
+                expires_at = tonumber(expires_at) or 0
+                watched_token = spotify_clean_token(watched_token)
+
+                spotify_token_expiry_serial += 1
+                local this_serial = spotify_token_expiry_serial
+
+                if expires_at <= 0 or watched_token == "" then
+                    return
+                end
+
+                -- One scheduled wake-up at expiration; this is not a polling loop.
+                local wait_seconds = math.max(0, expires_at - os.time() + 1)
+                task.delay(wait_seconds, function()
+                    if this_serial ~= spotify_token_expiry_serial
+                        or (shared and shared.is_unloading)
+                        or spotify_token ~= watched_token
+                    then
+                        return
+                    end
+
+                    spotify_connected = false
+                    spotify_rejected_token = watched_token
+                    spotify_token = ""
+                    spotify_set_status("Not Connected - token expired; checking Spotify.json...")
+
+                    task.spawn(function()
+                        if spotify_wait_for_changed_token(watched_token) then
+                            if spotify_refresh_player then
+                                spotify_refresh_player(true)
+                            else
+                                spotify_set_status("Connected")
+                            end
+                        end
+                    end)
+                end)
+            end
+
+            local function spotify_sync_token_from_file()
+                local data = spotify_read_file()
+                if not data then
+                    return false
+                end
+
+                local candidate = spotify_clean_token(data.access_token)
+                local expires_at = tonumber(data.expires_at) or 0
+
+                if candidate == "" then
+                    if spotify_token == "" then
+                        spotify_set_status("Waiting for spotify_auth.py")
+                    end
+                    return false
+                end
+
+                if expires_at > 0 and expires_at <= os.time() then
+                    local expired_token = candidate
+                    spotify_connected = false
+                    spotify_rejected_token = expired_token
+                    if spotify_token == expired_token then
+                        spotify_token = ""
+                    end
+                    spotify_set_status("Not Connected - token expired; checking Spotify.json...")
+
+                    task.spawn(function()
+                        if spotify_wait_for_changed_token(expired_token) and spotify_refresh_player then
+                            spotify_refresh_player(true)
+                        end
+                    end)
+                    return false
+                end
+
+                if candidate == spotify_rejected_token then
+                    return false
+                end
+
+                if candidate ~= spotify_token then
+                    spotify_token = candidate
+                    spotify_rejected_token = ""
+                    spotify_connected = false
+                    spotify_schedule_expiry_watch(expires_at, candidate)
+                    spotify_set_status("Token loaded - press Refresh Spotify")
+                    return true
+                end
+
+                return false
+            end
+
+            local function spotify_request(method, path, body)
+                if spotify_token == "" then
+                    return false, 0, nil, "No Spotify token"
+                end
+
+                local req = http_request or request or (syn and syn.request)
+                if not req then
+                    return false, 0, nil, "Executor has no HTTP request function"
+                end
+
+                local payload = body
+                if type(body) == "table" then
+                    local ok_encode, encoded = pcall(function()
+                        return spotify_http:JSONEncode(body)
+                    end)
+                    if not ok_encode then
+                        return false, 0, nil, encoded
+                    end
+                    payload = encoded
+                end
+
+                local request_data = {
+                    Url = "https://api.spotify.com/v1" .. path,
+                    Method = method,
+                    Headers = {
+                        ["Authorization"] = "Bearer " .. spotify_token,
+                        ["Content-Type"] = "application/json"
+                    }
+                }
+
+                if method ~= "GET" then
+                    -- Some executor HTTP stacks omit Content-Length for a zero-byte
+                    -- PUT/POST, which Spotify answers with HTTP 411. A tiny JSON body
+                    -- forces a real request body/Content-Length while remaining valid
+                    -- for Spotify playback-control endpoints.
+                    if payload == nil or payload == "" then
+                        payload = "{}"
+                    end
+                    request_data.Body = payload
+                end
+
+                local ok, response = pcall(req, request_data)
+                if not ok then
+                    return false, 0, nil, tostring(response)
+                end
+
+                if type(response) ~= "table" then
+                    return true, 200, nil, nil
+                end
+
+                local status_code = tonumber(response.StatusCode or response.statusCode or response.Status or response.status) or 0
+                local response_body = response.Body or response.body or ""
+                local decoded = nil
+
+                if type(response_body) == "string" and response_body ~= "" then
+                    pcall(function()
+                        decoded = spotify_http:JSONDecode(response_body)
+                    end)
+                end
+
+                return status_code >= 200 and status_code < 300, status_code, decoded, response_body
+            end
+
+            local function spotify_request_with_recovery(method, path, body)
+                local token_used = spotify_token
+                local ok, status_code, data, response_body = spotify_request(method, path, body)
+
+                if status_code == 401 and token_used ~= "" then
+                    spotify_connected = false
+                    spotify_rejected_token = token_used
+                    spotify_token = ""
+                    spotify_set_status("Not Connected - token expired; checking Spotify.json...")
+
+                    if spotify_wait_for_changed_token(token_used) then
+                        return spotify_request(method, path, body)
+                    end
+                end
+
+                return ok, status_code, data, response_body
+            end
+
+            local function spotify_clear_player(message)
+                spotify_is_playing = false
+                spotify_duration_ms = 0
+                spotify_anchor_progress_ms = 0
+                spotify_anchor_clock = os.clock()
+                pcall(function() spotify_song_label:SetText("Song: " .. (message or "Nothing playing")) end)
+                pcall(function() spotify_artist_label:SetText("Artist: -") end)
+                pcall(function() spotify_playback_label:SetText("Playback: -") end)
+                spotify_update_progress_ui(0, 0)
+                spotify_set_loop_ui(false)
+                spotify_hide_cover()
+            end
+
+            local function spotify_handle_auth_error(status_code)
+                spotify_connected = false
+
+                if status_code == 401 then
+                    spotify_connected = false
+                    spotify_set_status("Not Connected - token expired")
+                elseif status_code == 403 then
+                    spotify_set_status("Missing playback scope or Spotify denied access")
+                elseif status_code == 429 then
+                    spotify_set_status("Rate limited by Spotify")
+                elseif status_code ~= 0 then
+                    spotify_set_status("Spotify error " .. tostring(status_code))
+                else
+                    spotify_set_status("Request failed")
+                end
+            end
+
+            spotify_refresh_player = function(show_connected_status)
+                if spotify_token == "" or spotify_poll_busy then
+                    return false
+                end
+
+                spotify_poll_busy = true
+                local ok, status_code, data = spotify_request_with_recovery("GET", "/me/player")
+                spotify_poll_busy = false
+
+                if status_code == 204 then
+                    spotify_connected = true
+                    spotify_clear_player("No active playback")
+                    if show_connected_status then
+                        spotify_set_status("Connected - no active Spotify device")
+                    end
+                    return true
+                end
+
+                if not ok then
+                    spotify_handle_auth_error(status_code)
+                    if status_code == 401 or status_code == 403 then
+                        spotify_clear_player("Unavailable")
+                    end
+                    return false
+                end
+
+                if type(data) ~= "table" then
+                    spotify_connected = true
+                    spotify_clear_player("No playback data")
+                    if show_connected_status then
+                        spotify_set_status("Connected")
+                    end
+                    return true
+                end
+
+                spotify_connected = true
+                spotify_is_playing = data.is_playing == true
+
+                local item = data.item
+                local song_name = "Nothing playing"
+                local artist_text = "-"
+                local duration_ms = 0
+
+                if type(item) == "table" then
+                    song_name = tostring(item.name or "Unknown")
+                    duration_ms = tonumber(item.duration_ms) or 0
+
+                    local artist_names = {}
+                    if type(item.artists) == "table" then
+                        for _, artist in ipairs(item.artists) do
+                            if type(artist) == "table" and artist.name then
+                                artist_names[#artist_names + 1] = tostring(artist.name)
+                            end
+                        end
+                    elseif item.show and item.show.publisher then
+                        artist_names[#artist_names + 1] = tostring(item.show.publisher)
+                    end
+
+                    if #artist_names > 0 then
+                        artist_text = table.concat(artist_names, ", ")
+                    end
+                end
+
+                pcall(function() spotify_song_label:SetText("Song: " .. song_name) end)
+                pcall(function() spotify_artist_label:SetText("Artist: " .. artist_text) end)
+                pcall(function()
+                    spotify_playback_label:SetText("Playback: " .. (spotify_is_playing and "Playing" or "Paused"))
+                end)
+
+                spotify_update_cover(item)
+                spotify_anchor_progress(data.progress_ms or 0, duration_ms)
+                spotify_set_loop_ui(tostring(data.repeat_state or "off") == "track")
+
+                local device = data.device
+                if type(device) == "table" then
+                    local supports_volume = device.supports_volume
+                    if device.is_restricted == true then
+                        supports_volume = false
+                    end
+                    spotify_set_volume_ui(device.volume_percent, supports_volume)
+                end
+
+                if show_connected_status then
+                    spotify_set_status("Connected")
+                end
+
+                return true
+            end
+
+            -- Every command reloads Spotify.json once before sending. If Spotify then
+            -- reports 401, request_with_recovery checks the JSON up to 5 times for a
+            -- different token and retries the command once with that new token.
+            local function spotify_control(method, path, refresh_after)
+                local token_before_sync = spotify_token
+                spotify_sync_token_from_file()
+
+                if spotify_token == "" then
+                    local stale_token = spotify_rejected_token ~= "" and spotify_rejected_token or token_before_sync
+                    if stale_token ~= "" and not spotify_recovery_busy then
+                        task.spawn(function()
+                            if spotify_wait_for_changed_token(stale_token) then
+                                local ok, status_code = spotify_request_with_recovery(method, path)
+                                if ok then
+                                    spotify_set_status("Connected")
+                                    if refresh_after ~= false then
+                                        task.wait(0.15)
+                                        spotify_refresh_player(false)
+                                    end
+                                else
+                                    spotify_handle_auth_error(status_code)
+                                end
+                            end
+                        end)
+                        return true
+                    end
+
+                    spotify_set_status("Not Connected - waiting for Spotify token helper")
+                    return false
+                end
+
+                task.spawn(function()
+                    local ok, status_code = spotify_request_with_recovery(method, path)
+                    if ok then
+                        spotify_set_status("Connected")
+                        if refresh_after ~= false then
+                            task.wait(0.15)
+                            spotify_refresh_player(false)
+                        end
+                    else
+                        spotify_handle_auth_error(status_code)
+                    end
+                end)
+
+                return true
+            end
+
+            group_spotify_auth:AddButton({
+                Text = "Refresh Spotify",
+                Func = function()
+                    local old_token = spotify_token ~= "" and spotify_token or spotify_rejected_token
+                    spotify_rejected_token = ""
+                    spotify_sync_token_from_file()
+                    if spotify_token ~= "" then
+                        spotify_set_status("Refreshing player...")
+                        task.spawn(function()
+                            spotify_refresh_player(true)
+                        end)
+                    elseif old_token ~= "" and not spotify_recovery_busy then
+                        task.spawn(function()
+                            if spotify_wait_for_changed_token(old_token) then
+                                spotify_refresh_player(true)
+                            end
+                        end)
+                    else
+                        spotify_set_status("Not Connected - waiting for spotify_auth.py")
+                    end
+                end
+            })
+
+            group_spotify_player:AddSlider("SpotifyProgress", {
+                Text = "Track Progress",
+                Default = 0,
+                Min = 0,
+                Max = 100,
+                Rounding = 0,
+                Compact = false,
+                HideMax = true,
+                FormatDisplayValue = function()
+                    return ""
+                end,
+                Callback = function(value)
+                    if spotify_setting_progress or spotify_duration_ms <= 0 then
+                        return
+                    end
+
+                    local percent = math.clamp(tonumber(value) or 0, 0, 100)
+                    local position_ms = math.floor((percent / 100) * spotify_duration_ms)
+                    spotify_anchor_progress_ms = position_ms
+                    spotify_anchor_clock = os.clock()
+                    spotify_user_seeking_until = os.clock() + 0.40
+
+                    pcall(function()
+                        spotify_time_label:SetText(
+                            spotify_format_ms(position_ms) .. " / " .. spotify_format_ms(spotify_duration_ms)
+                        )
+                    end)
+
+                    -- Debounce dragging so only the final slider position is sent.
+                    spotify_seek_serial += 1
+                    local this_seek = spotify_seek_serial
+                    task.delay(0.18, function()
+                        if this_seek ~= spotify_seek_serial or spotify_duration_ms <= 0 then
+                            return
+                        end
+
+                        spotify_control(
+                            "PUT",
+                            "/me/player/seek?position_ms=" .. tostring(position_ms),
+                            false
+                        )
+
+                        -- Seeking all the way to the end makes Spotify advance/restart the
+                        -- track, but the normal seek path deliberately does not refresh the
+                        -- player. Only for an end-of-track seek, briefly re-check playback so
+                        -- the song/cover/progress update as soon as Spotify switches tracks.
+                        if percent >= 99 then
+                            task.spawn(function()
+                                task.wait(0.45)
+
+                                for _ = 1, 3 do
+                                    if shared and shared.is_unloading then
+                                        break
+                                    end
+
+                                    spotify_refresh_player(false)
+
+                                    -- Once the refreshed player is clearly away from the end,
+                                    -- Spotify has advanced (or Loop Song restarted the track).
+                                    local displayed_progress = 0
+                                    if spotify_duration_ms > 0 then
+                                        local elapsed_ms = math.max(0, os.clock() - spotify_anchor_clock) * 1000
+                                        local current_ms = math.min(
+                                            spotify_duration_ms,
+                                            spotify_anchor_progress_ms + (spotify_is_playing and elapsed_ms or 0)
+                                        )
+                                        displayed_progress = (current_ms / spotify_duration_ms) * 100
+                                    end
+
+                                    if spotify_duration_ms <= 0 or displayed_progress < 95 then
+                                        break
+                                    end
+
+                                    task.wait(0.40)
+                                end
+                            end)
+                        end
+                    end)
+                end
+            })
+            spotify_setting_progress = false
+
+            group_spotify_player:AddToggle("SpotifyLoopSong", {
+                Text = "Loop Song",
+                Default = false,
+                Callback = function(value)
+                    if spotify_setting_loop then
+                        return
+                    end
+
+                    spotify_control(
+                        "PUT",
+                        "/me/player/repeat?state=" .. (value and "track" or "off"),
+                        false
+                    )
+                end
+            })
+            spotify_setting_loop = false
+
+            group_spotify_player:AddSlider("SpotifyVolume", {
+                Text = "Volume",
+                Default = 100,
+                Min = 0,
+                Max = 100,
+                Rounding = 0,
+                Compact = false,
+                Callback = function(value)
+                    if spotify_setting_volume then
+                        return
+                    end
+
+                    local volume = math.clamp(math.floor((tonumber(value) or 0) + 0.5), 0, 100)
+                    spotify_user_volume_until = os.clock() + 0.75
+
+                    if spotify_volume_supported == false then
+                        spotify_set_status("Active Spotify device does not support volume control")
+                        return
+                    end
+
+                    -- Debounce slider movement so dragging from (for example) 20 -> 80
+                    -- sends one final Spotify request instead of dozens of volume calls.
+                    spotify_volume_serial += 1
+                    local this_volume = spotify_volume_serial
+                    task.delay(0.18, function()
+                        if this_volume ~= spotify_volume_serial then
+                            return
+                        end
+
+                        spotify_control(
+                            "PUT",
+                            "/me/player/volume?volume_percent=" .. tostring(volume),
+                            false
+                        )
+                    end)
+                end
+            })
+            spotify_setting_volume = false
+
+            group_spotify_player:AddDivider()
+
+            group_spotify_player:AddButton({
+                Text = "Next",
+                Func = function()
+                    spotify_control("POST", "/me/player/next", true)
+                end
+            })
+
+            group_spotify_player:AddButton({
+                Text = "Play / Pause",
+                Func = function()
+                    if spotify_is_playing then
+                        spotify_control("PUT", "/me/player/pause", true)
+                    else
+                        spotify_control("PUT", "/me/player/play", true)
+                    end
+                end
+            })
+
+            group_spotify_player:AddButton({
+                Text = "Previous",
+                Func = function()
+                    spotify_control("POST", "/me/player/previous", true)
+                end
+            })
+
+            spotify_make_file_if_missing()
+            spotify_sync_token_from_file()
+
+            -- Local progress animation + lightweight external Spotify sync.
+            -- Progress itself is still calculated locally every 0.25s. The only normal
+            -- network check is GET /me/player once every 3 seconds while connected, so
+            -- changing songs or play/pause in the real Spotify client updates the hub.
+            -- Spotify.json is NOT read by this loop.
+            local spotify_external_sync_interval = 3.0
+            local spotify_last_external_sync = os.clock()
+
+            task.spawn(function()
+                while not (shared and shared.is_unloading) do
+                    task.wait(0.25)
+
+                    local now = os.clock()
+
+                    if spotify_is_playing
+                        and spotify_duration_ms > 0
+                        and now >= spotify_user_seeking_until
+                    then
+                        local elapsed_ms = math.max(0, now - spotify_anchor_clock) * 1000
+                        local position_ms = math.min(
+                            spotify_duration_ms,
+                            spotify_anchor_progress_ms + elapsed_ms
+                        )
+                        spotify_update_progress_ui(position_ms, spotify_duration_ms)
+                    end
+
+                    -- Do not auto-connect from a merely-loaded token: the user still presses
+                    -- Refresh Spotify once. After that, keep the displayed player in sync with
+                    -- changes made from Spotify itself. Skip while seeking/recovering/busy.
+                    if spotify_connected
+                        and spotify_token ~= ""
+                        and not spotify_poll_busy
+                        and not spotify_recovery_busy
+                        and now >= spotify_user_seeking_until
+                        and (now - spotify_last_external_sync) >= spotify_external_sync_interval
+                    then
+                        spotify_last_external_sync = now
+                        task.spawn(function()
+                            spotify_refresh_player(false)
+                        end)
+                    end
+                end
+            end)
+        end
 
         do
             local group_combat_utils = Tabs.Combat:AddLeftGroupbox("Combat Utilities")
@@ -26280,7 +27278,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 shared.SaveManager:SetFolder(config_folder)
                 shared.ThemeManager:SetFolder("HYDROXIDE")
 
-                shared.SaveManager:SetIgnoreIndexes({ "SavedPaths" })
+                shared.SaveManager:SetIgnoreIndexes({ "SavedPaths", "SpotifyProgress", "SpotifyLoopSong", "SpotifyVolume" })
 
                 shared.SaveManager.OnConfigLoaded = function(configName)
                     if cheat_client.config.persistent_configs and mem and configName then
