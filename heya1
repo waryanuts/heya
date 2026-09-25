@@ -17867,6 +17867,222 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local COLLECTED_IDS_MAX_SIZE = 500
             local pending_pickup_ids = trinket_bot.pending_pickup_ids
             local active_tween_data = {tween = nil, connection = nil}
+
+            -- Offset Mobs
+            -- Uses the confirmed root-motion animation to move the visible R6 rig
+            -- while leaving HumanoidRootPart at the bot's real path position.
+            local OFFSET_MOBS_ANIMATION_ID = "rbxassetid://2986649587"
+            local OFFSET_MOBS_TARGET = 18
+            local offset_mobs_track = nil
+            local offset_mobs_animation = nil
+            local offset_mobs_character = nil
+            local offset_mobs_frozen = false
+            local offset_mobs_frozen_time = nil
+            local offset_mobs_gate_paused = false
+
+            local function offset_mobs_should_run()
+                return trinket_bot.path_running
+                    and not offset_mobs_gate_paused
+                    and Toggles
+                    and Toggles.OffsetMobs
+                    and Toggles.OffsetMobs.Value
+            end
+
+            local function stop_offset_mobs()
+                local old_track = offset_mobs_track
+                local old_animation = offset_mobs_animation
+
+                offset_mobs_track = nil
+                offset_mobs_animation = nil
+                offset_mobs_character = nil
+                offset_mobs_frozen = false
+                offset_mobs_frozen_time = nil
+
+                if old_track then
+                    pcall(function()
+                        old_track:AdjustSpeed(1)
+                        old_track:Stop(0)
+                    end)
+                end
+
+                if old_animation then
+                    pcall(function()
+                        old_animation:Destroy()
+                    end)
+                end
+            end
+
+            local function start_offset_mobs()
+                if not offset_mobs_should_run() then
+                    return false
+                end
+
+                local character = plr.Character
+                local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
+                local root = character and FindFirstChild(character, "HumanoidRootPart")
+                local root_joint = root and FindFirstChild(root, "RootJoint")
+
+                if not character or not humanoid or humanoid.Health <= 0 or not root or not root_joint then
+                    return false
+                end
+
+                if offset_mobs_character == character
+                    and offset_mobs_track
+                    and offset_mobs_track.IsPlaying
+                then
+                    return true
+                end
+
+                stop_offset_mobs()
+
+                local animator = FindFirstChildOfClass(humanoid, "Animator")
+                if not animator then
+                    animator = Instance.new("Animator")
+                    animator.Parent = humanoid
+                end
+
+                local animation = Instance.new("Animation")
+                animation.Name = "OffsetMobsAnimation"
+                animation.AnimationId = OFFSET_MOBS_ANIMATION_ID
+
+                local ok, track = pcall(function()
+                    return animator:LoadAnimation(animation)
+                end)
+
+                if not ok or not track then
+                    pcall(function() animation:Destroy() end)
+                    return false
+                end
+
+                offset_mobs_character = character
+                offset_mobs_animation = animation
+                offset_mobs_track = track
+                offset_mobs_frozen = false
+                offset_mobs_frozen_time = nil
+
+                track.Priority = Enum.AnimationPriority.Action4
+                track.Looped = false
+
+                pcall(function()
+                    track:Play(0, 1, 1)
+                end)
+
+                return true
+            end
+
+            local function pause_offset_mobs_for_gate()
+                offset_mobs_gate_paused = true
+                stop_offset_mobs()
+
+                -- Never allow Gate to cast while the root-motion offset is still active.
+                -- Stopping the animation normally returns RootJoint.Transform to the regular
+                -- animation state within a few simulation frames. Wait for that before gating.
+                local deadline = os.clock() + 1.25
+                while os.clock() < deadline do
+                    local character = plr.Character
+                    local root = character and FindFirstChild(character, "HumanoidRootPart")
+                    local root_joint = root and FindFirstChild(root, "RootJoint")
+
+                    if not character or not root or not root_joint then
+                        return false
+                    end
+
+                    local root_z = root_joint.Transform.Position.Z
+                    if math.abs(root_z) <= 1.5 then
+                        -- Give the normal animator one extra physics frame to settle.
+                        rs.PreSimulation:Wait()
+                        return true
+                    end
+
+                    rs.PreSimulation:Wait()
+                end
+
+                -- Last-resort cleanup if the stopped Action4 track left a stale transform.
+                -- This is only attempted while Offset Mobs is paused and before any gate input.
+                local character = plr.Character
+                local root = character and FindFirstChild(character, "HumanoidRootPart")
+                local root_joint = root and FindFirstChild(root, "RootJoint")
+                if root_joint then
+                    pcall(function()
+                        root_joint.Transform = CFrame.identity
+                    end)
+                    rs.PreSimulation:Wait()
+                    return math.abs(root_joint.Transform.Position.Z) <= 2.0
+                end
+
+                return false
+            end
+
+            local function resume_offset_mobs_after_gate()
+                offset_mobs_gate_paused = false
+
+                if trinket_bot.path_running
+                    and Toggles
+                    and Toggles.OffsetMobs
+                    and Toggles.OffsetMobs.Value
+                then
+                    task.defer(function()
+                        if offset_mobs_should_run() then
+                            start_offset_mobs()
+                        end
+                    end)
+                end
+            end
+
+            local offset_mobs_supervisor_connection
+            offset_mobs_supervisor_connection = utility:Connection(rs.PreSimulation, LPH_NO_VIRTUALIZE(function()
+                if shared.is_unloading then
+                    stop_offset_mobs()
+                    return
+                end
+
+                if not offset_mobs_should_run() then
+                    if offset_mobs_track then
+                        stop_offset_mobs()
+                    end
+                    return
+                end
+
+                local character = plr.Character
+                local root = character and FindFirstChild(character, "HumanoidRootPart")
+                local root_joint = root and FindFirstChild(root, "RootJoint")
+
+                if not character or not root_joint then
+                    stop_offset_mobs()
+                    return
+                end
+
+                if offset_mobs_character ~= character
+                    or not offset_mobs_track
+                    or not offset_mobs_track.IsPlaying
+                then
+                    start_offset_mobs()
+                    return
+                end
+
+                if not offset_mobs_frozen then
+                    local root_z = root_joint.Transform.Position.Z
+                    if root_z >= OFFSET_MOBS_TARGET then
+                        offset_mobs_frozen = true
+                        offset_mobs_frozen_time = offset_mobs_track.TimePosition
+                        pcall(function()
+                            offset_mobs_track:AdjustSpeed(0)
+                        end)
+                    end
+                elseif offset_mobs_frozen_time then
+                    pcall(function()
+                        if math.abs(offset_mobs_track.TimePosition - offset_mobs_frozen_time) > 0.01 then
+                            offset_mobs_track.TimePosition = offset_mobs_frozen_time
+                        end
+                        offset_mobs_track:AdjustSpeed(0)
+                    end)
+                end
+            end))
+
+            if shared and shared.connections then
+                shared.connections[#shared.connections + 1] = offset_mobs_supervisor_connection
+            end
+
             local cr_start_alert_sent = false
 
             local function mark_trinket_collected(trinket_id_value)
@@ -18335,6 +18551,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return
                 end
 
+                -- Offset Mobs does not change route, trinket pickup, or Gate targets.
+                -- The real HRP always travels to the exact position the bot normally uses.
+
                 local current_position = root.Position
                 local distance = (targetPosition - current_position).Magnitude
                 if distance > 1500 then
@@ -18474,12 +18693,29 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             local function Gate(where, expected_destination)
+                local offset_paused_for_this_gate = false
+
                 local function finish_gate(result)
                     trinket_bot.gate_in_progress = false
+
+                    if offset_paused_for_this_gate then
+                        offset_paused_for_this_gate = false
+                        resume_offset_mobs_after_gate()
+                    end
+
                     return result
                 end
 
                 if not trinket_bot.path_running then
+                    return finish_gate(false)
+                end
+
+                -- Gate must always happen from the normal, non-offset rig state.
+                -- Disable Offset Mobs first and refuse to continue until RootJoint has
+                -- actually returned close to its normal transform.
+                offset_paused_for_this_gate = true
+                if not pause_offset_mobs_for_gate() then
+                    library:Notify("Offset Mobs did not clear in time - gate aborted")
                     return finish_gate(false)
                 end
 
@@ -19026,6 +19262,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     pickup_mythics_artifacts = Options.PickupMythicsArtifacts and Options.PickupMythicsArtifacts.Value or {},
                     pickup_event_items = Toggles.PickupEventItems and Toggles.PickupEventItems.Value or false,
                     pickup_trinkets = Toggles.PickupTrinkets and Toggles.PickupTrinkets.Value or false,
+                    offset_mobs = Toggles.OffsetMobs and Toggles.OffsetMobs.Value or false,
                     disable_gpu_rendering = Toggles.DisableGPURendering and Toggles.DisableGPURendering.Value or false,
                     emergency_serverhop_conditions = Options.EmergencyServerhopConditions and Options.EmergencyServerhopConditions.Value or {},
                     join_oldest_server = Toggles.JoinOldestServer and Toggles.JoinOldestServer.Value or false,
@@ -22806,6 +23043,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Default = false
             })
 
+            group_trinket_bot:AddToggle("OffsetMobs", {
+                Text = "Offset Mobs",
+                Default = false,
+                Tooltip = "Offsets the visible character upward while the trinket path runs. Route movement, trinket pickup, and Gate behavior all use their normal positions with no offset compensation."
+            })
+
             group_trinket_bot:AddDivider()
 
             group_trinket_bot:AddToggle("KickOnTrinket", {
@@ -23045,6 +23288,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
                 if Toggles.PickupEventItems then Toggles.PickupEventItems:SetValue(settings.pickup_event_items or false) end
                 if Toggles.PickupTrinkets then Toggles.PickupTrinkets:SetValue(settings.pickup_trinkets or false) end
+                if Toggles.OffsetMobs then Toggles.OffsetMobs:SetValue(settings.offset_mobs or false) end
                 if Toggles.DisableGPURendering then Toggles.DisableGPURendering:SetValue(settings.disable_gpu_rendering or false) end
                 if Options.EmergencyServerhopConditions then Options.EmergencyServerhopConditions:SetValue(settings.emergency_serverhop_conditions or {}) end
                 if Toggles.JoinOldestServer then Toggles.JoinOldestServer:SetValue(settings.join_oldest_server or false) end
@@ -24027,6 +24271,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             pickup_mythics_artifacts = Options.PickupMythicsArtifacts and Options.PickupMythicsArtifacts.Value or {},
                             pickup_event_items = Toggles.PickupEventItems and Toggles.PickupEventItems.Value or false,
                             pickup_trinkets = Toggles.PickupTrinkets and Toggles.PickupTrinkets.Value or false,
+                            offset_mobs = Toggles.OffsetMobs and Toggles.OffsetMobs.Value or false,
                             disable_gpu_rendering = Toggles.DisableGPURendering and Toggles.DisableGPURendering.Value or false,
                             emergency_serverhop_conditions = Options.EmergencyServerhopConditions and Options.EmergencyServerhopConditions.Value or {},
                             join_oldest_server = Toggles.JoinOldestServer and Toggles.JoinOldestServer.Value or false,
