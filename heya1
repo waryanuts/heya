@@ -609,6 +609,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             auto_knock = false,
             auto_knock_severity = 50,
             pop_phoenix_flowers = false,
+            offset_mobs_exploit = false,
             no_killbrick = false,
             no_mob_trigger = false,
             freecam = false,
@@ -12286,6 +12287,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             })
 
+            group_exploits:AddToggle("offset_mobs_exploit", {
+                Text = "Offset Mobs",
+                Default = cheat_client.config.offset_mobs_exploit,
+                Tooltip = "Standalone Offset Mobs toggle. Uses the same animation offset as the Trinket Bot; bot Gate safety still removes the offset before casting Gate.",
+                Callback = function(value)
+                    cheat_client.config.offset_mobs_exploit = value
+                end
+            })
+
             if is_khei then
                 group_exploits:AddDivider()
 
@@ -17881,11 +17891,17 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local offset_mobs_gate_paused = false
 
             local function offset_mobs_should_run()
-                return trinket_bot.path_running
-                    and not offset_mobs_gate_paused
+                if offset_mobs_gate_paused then
+                    return false
+                end
+
+                local exploit_enabled = cheat_client.config.offset_mobs_exploit == true
+                local bot_enabled = trinket_bot.path_running
                     and Toggles
                     and Toggles.OffsetMobs
                     and Toggles.OffsetMobs.Value
+
+                return exploit_enabled or bot_enabled
             end
 
             local function stop_offset_mobs()
@@ -18016,11 +18032,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local function resume_offset_mobs_after_gate()
                 offset_mobs_gate_paused = false
 
-                if trinket_bot.path_running
-                    and Toggles
-                    and Toggles.OffsetMobs
-                    and Toggles.OffsetMobs.Value
-                then
+                if offset_mobs_should_run() then
                     task.defer(function()
                         if offset_mobs_should_run() then
                             start_offset_mobs()
