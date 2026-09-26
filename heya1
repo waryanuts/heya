@@ -19292,6 +19292,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     kick_trinket_list = Options.KickTrinketList and Options.KickTrinketList.Value or {},
                     kick_on_phoenix_flower_amount = Toggles.KickOnPhoenixFlowerAmount and Toggles.KickOnPhoenixFlowerAmount.Value or false,
                     phoenix_flower_kick_amount = Options.PhoenixFlowerKickAmount and Options.PhoenixFlowerKickAmount.Value or 1,
+                    kick_on_aoe_ctags = Toggles.KickOnAOECTags and Toggles.KickOnAOECTags.Value or false,
                     stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false,
                     reequip_gate_in_loop = Toggles.ReequipGateInLoop == nil and true or Toggles.ReequipGateInLoop.Value,
                     hold_pebble_in_loop = Toggles.HoldPebbleInLoop and Toggles.HoldPebbleInLoop.Value or false,
@@ -20275,6 +20276,89 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 proximity_warnings = {}
                 local emergency_gate_in_progress = false
                 local critical_serverhop_sent = false
+
+                -- Kick on AOE CTags: equipped-only, 150-stud hard safety check.
+                local AOE_CTAG_RANGE = 150
+                local aoe_ctag_tools = {
+                    ["Abyssal Scream"] = true,
+                    ["Dragon Roar"] = true,
+                    ["Consuming Flames"] = true,
+                }
+                local aoe_ctag_kick_sent = false
+
+                local function handle_aoe_ctag_tool(tool)
+                    if aoe_ctag_kick_sent or not trinket_bot.path_running then return false end
+                    if not (Toggles.KickOnAOECTags and Toggles.KickOnAOECTags.Value) then return false end
+                    if not tool or not tool:IsA("Tool") or not aoe_ctag_tools[tool.Name] then return false end
+
+                    -- "Holding out" = actually equipped as a direct child of another Character.
+                    local character = tool.Parent
+                    if not character or not character:IsA("Model") then return false end
+
+                    local owner_player = plrs:GetPlayerFromCharacter(character)
+                    if not owner_player or owner_player == plr or tool.Parent ~= owner_player.Character then
+                        return false
+                    end
+
+                    local local_character = plr.Character
+                    local local_root = local_character and FindFirstChild(local_character, "HumanoidRootPart")
+                    local other_root = FindFirstChild(character, "HumanoidRootPart")
+                    if not local_root or not other_root then return false end
+
+                    local distance = (other_root.Position - local_root.Position).Magnitude
+                    if distance > AOE_CTAG_RANGE then return false end
+
+                    aoe_ctag_kick_sent = true
+                    trinket_bot.path_running = false
+
+                    local reason = string.format("%s held out %s within %.0f studs", owner_player.Name, tool.Name, distance)
+                    library:Notify(reason)
+                    if utility and utility.plain_webhook then
+                        utility:plain_webhook(reason)
+                    end
+                    plr:Kick(reason)
+                    return true
+                end
+
+                -- Catch a matching tool that was already equipped when the bot starts.
+                if Toggles.KickOnAOECTags and Toggles.KickOnAOECTags.Value then
+                    for _, other_player in next, plrs:GetPlayers() do
+                        if other_player ~= plr and other_player.Character then
+                            for _, tool in ipairs(other_player.Character:GetChildren()) do
+                                if handle_aoe_ctag_tool(tool) then
+                                    break
+                                end
+                            end
+                        end
+                        if aoe_ctag_kick_sent then break end
+                    end
+                end
+
+                local aoe_ctag_connection = track_connection("aoe_ctag_kick", utility:Connection(ws.Live.DescendantAdded, function(descendant)
+                    handle_aoe_ctag_tool(descendant)
+                end))
+
+                -- Also catch players who equipped the tool outside 150 studs and then
+                -- move into range without re-equipping it. Throttled to 10 checks/sec.
+                local aoe_ctag_scan_elapsed = 0
+                local aoe_ctag_range_connection = track_connection("aoe_ctag_range", utility:Connection(rs.Heartbeat, function(dt)
+                    if aoe_ctag_kick_sent or not trinket_bot.path_running then return end
+                    if not (Toggles.KickOnAOECTags and Toggles.KickOnAOECTags.Value) then return end
+
+                    aoe_ctag_scan_elapsed += dt
+                    if aoe_ctag_scan_elapsed < 0.1 then return end
+                    aoe_ctag_scan_elapsed = 0
+
+                    for _, other_player in next, plrs:GetPlayers() do
+                        if other_player ~= plr and other_player.Character then
+                            for _, tool in ipairs(other_player.Character:GetChildren()) do
+                                if aoe_ctag_tools[tool.Name] and handle_aoe_ctag_tool(tool) then
+                                    return
+                                end
+                            end
+                        end
+                    end
+                end))
 
                 local emergency_serverhop_connection
                 local emergency_conditions = Options.EmergencyServerhopConditions and Options.EmergencyServerhopConditions.Value or {}
@@ -23105,6 +23189,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Compact = true
             })
 
+            group_trinket_bot:AddToggle("KickOnAOECTags", {
+                Text = "Kick on AOE CTags",
+                Default = false,
+                Tooltip = "Immediately kicks and webhooks if another player equips Abyssal Scream, Dragon Roar, or Consuming Flames within 150 studs"
+            })
+
             group_trinket_bot:AddDivider()
 
             group_trinket_bot:AddDropdown("EmergencyServerhopConditions", {
@@ -23318,6 +23408,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if Options.KickTrinketList then Options.KickTrinketList:SetValue(settings.kick_trinket_list or {}) end
                 if Toggles.KickOnPhoenixFlowerAmount then Toggles.KickOnPhoenixFlowerAmount:SetValue(settings.kick_on_phoenix_flower_amount or false) end
                 if Options.PhoenixFlowerKickAmount then Options.PhoenixFlowerKickAmount:SetValue(math.clamp(tonumber(settings.phoenix_flower_kick_amount) or 1, 1, 50)) end
+                if Toggles.KickOnAOECTags then Toggles.KickOnAOECTags:SetValue(settings.kick_on_aoe_ctags or false) end
                 if Toggles.StayInServer then Toggles.StayInServer:SetValue(settings.stay_in_server or false) end
                 if Toggles.ReequipGateInLoop then Toggles.ReequipGateInLoop:SetValue(settings.reequip_gate_in_loop == nil and true or settings.reequip_gate_in_loop) end
                 if Toggles.HoldPebbleInLoop then Toggles.HoldPebbleInLoop:SetValue(settings.hold_pebble_in_loop or false) end
@@ -24301,6 +24392,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             kick_trinket_list = Options.KickTrinketList and Options.KickTrinketList.Value or {},
                             kick_on_phoenix_flower_amount = Toggles.KickOnPhoenixFlowerAmount and Toggles.KickOnPhoenixFlowerAmount.Value or false,
                             phoenix_flower_kick_amount = Options.PhoenixFlowerKickAmount and Options.PhoenixFlowerKickAmount.Value or 1,
+                            kick_on_aoe_ctags = Toggles.KickOnAOECTags and Toggles.KickOnAOECTags.Value or false,
                             stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false,
                             reequip_gate_in_loop = Toggles.ReequipGateInLoop == nil and true or Toggles.ReequipGateInLoop.Value,
                             hold_pebble_in_loop = Toggles.HoldPebbleInLoop and Toggles.HoldPebbleInLoop.Value or false,
