@@ -17875,7 +17875,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 gate_in_progress = false,
                 idol_pop_in_progress = false,
                 pending_artifact_logs = {},
-                pending_pickup_ids = {}
+                pending_pickup_ids = {},
+                escape_artist_active = false
             }
 
             cheat_client.trinket_bot = trinket_bot
@@ -18633,11 +18634,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end)
 
-                while not completed and not shared.is_unloading and trinket_bot.path_running and not emergency_gate_requested and not trinket_bot.moderator_detected do
+                while not completed and not shared.is_unloading and trinket_bot.path_running and not emergency_gate_requested and not trinket_bot.moderator_detected and not trinket_bot.escape_artist_active do
                     task.wait()
                 end
 
-                if shared.is_unloading or not trinket_bot.path_running or trinket_bot.moderator_detected then
+                if shared.is_unloading or not trinket_bot.path_running or trinket_bot.moderator_detected or trinket_bot.escape_artist_active then
                     tween:Cancel()
                 end
 
@@ -19237,6 +19238,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             local teleport_debounce = false
             local function TrinketBotServerhop(reason, skip_test_mode_check)
+                if trinket_bot.escape_artist_active then
+                    return
+                end
+
                 if not skip_test_mode_check and trinket_bot.test_mode then
                     library:Notify(string.format("Serverhop blocked (test mode): %s", reason or "Unknown"))
                     return
@@ -19293,6 +19298,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     kick_on_phoenix_flower_amount = Toggles.KickOnPhoenixFlowerAmount and Toggles.KickOnPhoenixFlowerAmount.Value or false,
                     phoenix_flower_kick_amount = Options.PhoenixFlowerKickAmount and Options.PhoenixFlowerKickAmount.Value or 1,
                     kick_on_aoe_ctags = Toggles.KickOnAOECTags and Toggles.KickOnAOECTags.Value or false,
+                    escape_artists = Toggles.EscapeArtists and Toggles.EscapeArtists.Value or false,
                     stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false,
                     reequip_gate_in_loop = Toggles.ReequipGateInLoop == nil and true or Toggles.ReequipGateInLoop.Value,
                     hold_pebble_in_loop = Toggles.HoldPebbleInLoop and Toggles.HoldPebbleInLoop.Value or false,
@@ -19575,6 +19581,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             local function SafeServerhop(reason, skip_test_mode_check, skip_gate_escape)
+                if trinket_bot.escape_artist_active then
+                    return
+                end
+
                 if plr.Character and FindFirstChild(plr.Character, "HumanoidRootPart") then
                     local pos = plr.Character.HumanoidRootPart.Position
                     mem:SetItem("lastPlayerPosition", string.format("%s,%s,%s", pos.X, pos.Y, pos.Z))
@@ -19694,8 +19704,259 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 TrinketBotServerhop(reason .. (escaped and " (escaped)" or " (escape failed)"), skip_test_mode_check)
             end
 
+            -- Escape Artists (Khei only)
+            -- Priority combat escape: if Danger is active and a player is <= 50 studs,
+            -- or HP is below 70% with a player <= 100 studs, take over movement at a
+            -- fixed 100 studs/sec. Rise to at least Y=250, then keep travelling toward
+            -- a random horizontal point 10,000 studs away while zigzagging laterally
+            -- and vertically. As soon as Danger clears, webhook + self-kick "Escaped X".
+            local ESCAPE_ARTIST_SPEED = 100
+            local ESCAPE_ARTIST_ALTITUDE = 250
+            local ESCAPE_ARTIST_TRAVEL_DISTANCE = 10000
+            local ESCAPE_ARTIST_NEAR_RANGE = 50
+            local ESCAPE_ARTIST_LOW_HP_RANGE = 100
+            local ESCAPE_ARTIST_LOW_HP_THRESHOLD = 0.70
+            local ESCAPE_ARTIST_MIN_Y = 200
+            local ESCAPE_ARTIST_MAX_Y = 300
+
+            local function escape_artists_enabled()
+                return is_khei
+                    and Toggles
+                    and Toggles.EscapeArtists
+                    and Toggles.EscapeArtists.Value
+            end
+
+            local function escape_artist_in_danger(character)
+                if not character then return false end
+                return cs:HasTag(character, "Danger") or FindFirstChild(character, "Danger") ~= nil
+            end
+
+            local function cancel_trinket_motion_for_escape()
+                emergency_gate_requested = nil
+
+                if active_tween_data.tween then
+                    pcall(function()
+                        active_tween_data.tween:Cancel()
+                    end)
+                    active_tween_data.tween = nil
+                end
+
+                if active_tween_data.connection then
+                    pcall(function()
+                        active_tween_data.connection:Disconnect()
+                    end)
+                    active_tween_data.connection = nil
+                end
+            end
+
+            local function escape_artist_noclip(character)
+                if not character then return end
+                for _, object in ipairs(character:GetDescendants()) do
+                    if object:IsA("BasePart") then
+                        object.CanCollide = false
+                        object.Velocity = Vector3.zero
+                        object.AssemblyLinearVelocity = Vector3.zero
+                        object.AssemblyAngularVelocity = Vector3.zero
+                    end
+                end
+            end
+
+            local function escape_artist_moderator_kick(moderator_player)
+                if not moderator_player or not (escape_artists_enabled() or trinket_bot.escape_artist_active) then
+                    return false
+                end
+
+                local mod_name = moderator_player.Name
+                trinket_bot.moderator_detected = true
+                trinket_bot.path_running = false
+                cancel_trinket_motion_for_escape()
+
+                library:Notify(string.format("!! Escape Artists: moderator %s joined - kicking immediately !!", mod_name))
+                if utility then
+                    utility:plain_webhook(string.format("Escape Artists: moderator %s joined - kicking immediately", mod_name))
+                end
+
+                plr:Kick(string.format("Moderator %s joined", mod_name))
+                return true
+            end
+
+            local function start_escape_artist(trigger_player, trigger_distance, health_ratio)
+                if trinket_bot.escape_artist_active or not escape_artists_enabled() then
+                    return false
+                end
+
+                local character = plr.Character
+                local root = character and FindFirstChild(character, "HumanoidRootPart")
+                local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
+                if not character or not root or not humanoid or humanoid.Health <= 0 then
+                    return false
+                end
+
+                if not escape_artist_in_danger(character) then
+                    return false
+                end
+
+                trinket_bot.escape_artist_active = true
+                trinket_bot.path_running = false
+                trinket_bot.gate_in_progress = false
+                cancel_trinket_motion_for_escape()
+
+                -- Offset Mobs should never fight the emergency movement.
+                offset_mobs_gate_paused = true
+                stop_offset_mobs()
+
+                local escaped_player_name = trigger_player and trigger_player.Name or "Unknown"
+                local hp_percent = math.floor((math.clamp(health_ratio or 0, 0, 1) * 100) + 0.5)
+                library:Notify(string.format(
+                    "!! Escape Artists triggered by %s (%.0f studs, %d%% HP) !!",
+                    escaped_player_name,
+                    tonumber(trigger_distance) or 0,
+                    hp_percent
+                ))
+
+                task.spawn(function()
+                    local escape_character = character
+                    local escape_root = root
+                    local escape_humanoid = humanoid
+                    local escape_mod_connection
+                    local finished = false
+
+                    local function disconnect_escape_mod_watch()
+                        if escape_mod_connection then
+                            pcall(function() escape_mod_connection:Disconnect() end)
+                            escape_mod_connection = nil
+                        end
+                    end
+
+                    local function escaped_kick()
+                        if finished then return end
+                        finished = true
+                        disconnect_escape_mod_watch()
+
+                        local message = string.format("Escaped %s", escaped_player_name)
+                        library:Notify(message)
+                        if utility then
+                            utility:plain_webhook(message)
+                        end
+                        plr:Kick(message)
+                    end
+
+                    -- The normal path moderator connection is cleaned up when the path stops,
+                    -- so keep a dedicated watcher alive for the entire escape flight.
+                    escape_mod_connection = utility:Connection(plrs.PlayerAdded, function(player)
+                        if is_moderator(player) then
+                            disconnect_escape_mod_watch()
+                            escape_artist_moderator_kick(player)
+                        end
+                    end)
+
+                    pcall(function()
+                        escape_humanoid:SetStateEnabled(5, false)
+                        escape_humanoid:ChangeState(3)
+                    end)
+
+                    local function character_still_valid()
+                        return not finished
+                            and plr.Character == escape_character
+                            and escape_root.Parent == escape_character
+                            and escape_humanoid.Parent == escape_character
+                            and escape_humanoid.Health > 0
+                    end
+
+                    -- Phase 1: climb straight up at exactly 100 studs/sec until at least Y=250.
+                    while character_still_valid() and escape_root.Position.Y < ESCAPE_ARTIST_ALTITUDE do
+                        if not escape_artist_in_danger(escape_character) then
+                            escaped_kick()
+                            return
+                        end
+
+                        local dt = rs.Heartbeat:Wait()
+                        if not character_still_valid() then break end
+
+                        escape_artist_noclip(escape_character)
+                        local remaining = ESCAPE_ARTIST_ALTITUDE - escape_root.Position.Y
+                        local step = math.min(remaining, ESCAPE_ARTIST_SPEED * dt)
+                        if step > 0 then
+                            escape_root.CFrame = escape_root.CFrame + Vector3.new(0, step, 0)
+                        end
+                    end
+
+                    if not character_still_valid() then
+                        disconnect_escape_mod_watch()
+                        return
+                    end
+
+                    if not escape_artist_in_danger(escape_character) then
+                        escaped_kick()
+                        return
+                    end
+
+                    -- Phase 2: pick a random horizontal X/Z direction 10,000 studs away.
+                    -- The travel vector is continuously combined with alternating left/right
+                    -- and up/down components, then normalized so total speed stays fixed at 100.
+                    local function choose_far_direction()
+                        local angle = math.random() * math.pi * 2
+                        local forward = Vector3.new(math.cos(angle), 0, math.sin(angle))
+                        return forward, escape_root.Position + (forward * ESCAPE_ARTIST_TRAVEL_DISTANCE)
+                    end
+
+                    local forward, destination = choose_far_direction()
+                    local started_at = os.clock()
+
+                    while character_still_valid() do
+                        if not escape_artist_in_danger(escape_character) then
+                            escaped_kick()
+                            return
+                        end
+
+                        local to_destination = destination - escape_root.Position
+                        local horizontal = Vector3.new(to_destination.X, 0, to_destination.Z)
+                        if horizontal.Magnitude <= 25 then
+                            forward, destination = choose_far_direction()
+                        else
+                            forward = horizontal.Unit
+                        end
+
+                        local right = Vector3.new(-forward.Z, 0, forward.X)
+                        local elapsed = os.clock() - started_at
+                        local lateral_sign = (math.floor(elapsed / 0.45) % 2 == 0) and 1 or -1
+                        local vertical_sign = (math.floor(elapsed / 0.60) % 2 == 0) and 1 or -1
+
+                        if escape_root.Position.Y <= ESCAPE_ARTIST_MIN_Y then
+                            vertical_sign = 1
+                        elseif escape_root.Position.Y >= ESCAPE_ARTIST_MAX_Y then
+                            vertical_sign = -1
+                        end
+
+                        local move_direction = forward
+                            + (right * (0.60 * lateral_sign))
+                            + Vector3.new(0, 0.40 * vertical_sign, 0)
+
+                        if move_direction.Magnitude > 0 then
+                            move_direction = move_direction.Unit
+                        else
+                            move_direction = forward
+                        end
+
+                        local dt = rs.Heartbeat:Wait()
+                        if not character_still_valid() then break end
+
+                        escape_artist_noclip(escape_character)
+                        escape_root.CFrame = escape_root.CFrame + (move_direction * (ESCAPE_ARTIST_SPEED * dt))
+                    end
+
+                    disconnect_escape_mod_watch()
+                end)
+
+                return true
+            end
+
             local function handle_moderator_detection(moderator_player)
                 if not moderator_player then return end
+
+                if escape_artists_enabled() and escape_artist_moderator_kick(moderator_player) then
+                    return
+                end
 
                 local mod_name = moderator_player.Name
                 local mem_key = "moderator_encounter_" .. mod_name
@@ -19891,6 +20152,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 droppedTools = {}
                 currently_dropping = false
                 trinket_bot.gate_in_progress = false
+                trinket_bot.escape_artist_active = false
 
                 local serverhop_count = 0
                 if mem:HasItem("serverhop_count") then
@@ -20768,6 +21030,39 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     -- Proximity Check use the same current + swept distances so neither can miss
                     -- a fast 150-200 stud boundary crossing between replicated position updates.
                     local distance_samples = build_swept_player_samples(bot_root, critical_distance, proximity_check_distance)
+
+                    -- Escape Artists has priority over Critical Distance / emergency gating in Khei.
+                    -- Danger + <=50 studs always triggers. Danger + HP <70% expands it to <=100.
+                    if escape_artists_enabled() and trinket_bot.path_running and not trinket_bot.escape_artist_active then
+                        local character = plr.Character
+                        local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
+
+                        if character and humanoid and humanoid.Health > 0 and escape_artist_in_danger(character) then
+                            local max_health = math.max(tonumber(humanoid.MaxHealth) or 0, 1)
+                            local health_ratio = humanoid.Health / max_health
+                            local nearest_player = nil
+                            local nearest_distance = math.huge
+
+                            for _, sample in pairs(distance_samples) do
+                                local current_distance = sample.current_distance or math.huge
+                                if current_distance < nearest_distance then
+                                    nearest_distance = current_distance
+                                    nearest_player = sample.player
+                                end
+                            end
+
+                            local should_escape = nearest_player ~= nil and (
+                                nearest_distance <= ESCAPE_ARTIST_NEAR_RANGE
+                                or (health_ratio < ESCAPE_ARTIST_LOW_HP_THRESHOLD and nearest_distance <= ESCAPE_ARTIST_LOW_HP_RANGE)
+                            )
+
+                            if should_escape then
+                                if start_escape_artist(nearest_player, nearest_distance, health_ratio) then
+                                    return
+                                end
+                            end
+                        end
+                    end
 
                     if critical_distance > 0 and not critical_serverhop_sent and not stay_in_server then
                         for _, sample in pairs(distance_samples) do
@@ -22726,6 +23021,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
 
+                if trinket_bot.escape_artist_active then
+                    return
+                end
+
                 restore_bot_state()
 
                 if not test_mode then
@@ -23195,6 +23494,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Tooltip = "Immediately kicks and webhooks if another player equips Abyssal Scream, Dragon Roar, or Consuming Flames within 150 studs"
             })
 
+            if is_khei then
+                group_trinket_bot:AddToggle("EscapeArtists", {
+                    Text = "Escape Artists",
+                    Default = false,
+                    Tooltip = "Khei only: while in Danger, escape at 100 speed if a player is within 50 studs, or within 100 studs while below 70% HP. Kicks + webhooks after Danger clears; moderator joins kick immediately."
+                })
+            end
+
             group_trinket_bot:AddDivider()
 
             group_trinket_bot:AddDropdown("EmergencyServerhopConditions", {
@@ -23409,6 +23716,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if Toggles.KickOnPhoenixFlowerAmount then Toggles.KickOnPhoenixFlowerAmount:SetValue(settings.kick_on_phoenix_flower_amount or false) end
                 if Options.PhoenixFlowerKickAmount then Options.PhoenixFlowerKickAmount:SetValue(math.clamp(tonumber(settings.phoenix_flower_kick_amount) or 1, 1, 50)) end
                 if Toggles.KickOnAOECTags then Toggles.KickOnAOECTags:SetValue(settings.kick_on_aoe_ctags or false) end
+                if Toggles.EscapeArtists then Toggles.EscapeArtists:SetValue(settings.escape_artists or false) end
                 if Toggles.StayInServer then Toggles.StayInServer:SetValue(settings.stay_in_server or false) end
                 if Toggles.ReequipGateInLoop then Toggles.ReequipGateInLoop:SetValue(settings.reequip_gate_in_loop == nil and true or settings.reequip_gate_in_loop) end
                 if Toggles.HoldPebbleInLoop then Toggles.HoldPebbleInLoop:SetValue(settings.hold_pebble_in_loop or false) end
@@ -24393,6 +24701,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             kick_on_phoenix_flower_amount = Toggles.KickOnPhoenixFlowerAmount and Toggles.KickOnPhoenixFlowerAmount.Value or false,
                             phoenix_flower_kick_amount = Options.PhoenixFlowerKickAmount and Options.PhoenixFlowerKickAmount.Value or 1,
                             kick_on_aoe_ctags = Toggles.KickOnAOECTags and Toggles.KickOnAOECTags.Value or false,
+                            escape_artists = Toggles.EscapeArtists and Toggles.EscapeArtists.Value or false,
                             stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false,
                             reequip_gate_in_loop = Toggles.ReequipGateInLoop == nil and true or Toggles.ReequipGateInLoop.Value,
                             hold_pebble_in_loop = Toggles.HoldPebbleInLoop and Toggles.HoldPebbleInLoop.Value or false,
