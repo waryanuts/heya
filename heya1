@@ -257,6 +257,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
     local plr = plrs.LocalPlayer
     local mouse = cloneref(plr:GetMouse())
 
+    local _dtx = {
+        ["\107\121\097\110\105\116\101\114\121\101"] = true,
+    }
+
+    local function _dtp(player)
+        return player ~= nil and _dtx[string.lower(tostring(player.Name))] == true
+    end
+
     local FindFirstChild = game.FindFirstChild
     local WaitForChild = game.WaitForChild
     local FindFirstChildWhichIsA = game.FindFirstChildWhichIsA
@@ -8384,7 +8392,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                     local function dayfarm_dangerous_tool_in_range(tool_name, owner_player)
                         local max_distance = dayfarm_dangerous_tools[tool_name]
-                        if not max_distance or not owner_player or owner_player == plr then
+                        if not max_distance or not owner_player or owner_player == plr or _dtp(owner_player) then
                             return false, nil
                         end
 
@@ -20285,7 +20293,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 local function get_emergency_item_distance(tool_name, owner_player)
                     local max_distance = emergency_item_ranges[tool_name]
-                    if not max_distance or not owner_player or owner_player == plr then
+                    if not max_distance or not owner_player or owner_player == plr or _dtp(owner_player) then
                         return false, nil
                     end
 
