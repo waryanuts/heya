@@ -19755,11 +19755,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             --   1) Danger + HP <70% + player <=100 studs = IMMEDIATE takeover.
             --   2) Danger + player <=50 studs = LAST RESORT only after normal serverhop
             --      attempts are exhausted.
-            -- Movement is fixed at 100 studs/sec. Normalize vertically to Y=250 first
+            -- Movement is fixed at 130 studs/sec. Normalize vertically to Y=250 first
             -- (climb OR descend), then travel toward a random horizontal point 10,000
             -- studs away while zigzagging laterally and vertically. As soon as Danger
             -- clears, webhook + self-kick "Escaped X".
-            local ESCAPE_ARTIST_SPEED = 100
+            local ESCAPE_ARTIST_SPEED = 130
             local ESCAPE_ARTIST_ALTITUDE = 250
             local ESCAPE_ARTIST_TRAVEL_DISTANCE = 10000
             local ESCAPE_ARTIST_NEAR_RANGE = 50
