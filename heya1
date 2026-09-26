@@ -8374,8 +8374,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     local dayfarm_dangerous_tools = {
                         ["Perflora"] = math.huge,
                         ["Opal Shard"] = 1200,
-                        ["Fimbulvetr"] = 650,
-                        ["Manus Dei"] = 650,
+                        ["Fimbulvetr"] = 830,
+                        ["Manus Dei"] = 830,
                         ["Telorum"] = 650,
                         ["Pebble"] = 900,
                         ["Vulnere"] = 500,
@@ -20275,8 +20275,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     ["Duobe"] = math.huge,
                     ["Opal Shard"] = 1200,
                     ["Justice Spears"] = 850,
-                    ["Fimbulvetr"] = 650,
-                    ["Manus Dei"] = 650,
+                    ["Fimbulvetr"] = 830,
+                    ["Manus Dei"] = 830,
                     ["Telorum"] = 650,
                     ["Pebble"] = 650,
                     ["Vulnere"] = 500,
@@ -23101,7 +23101,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             group_trinket_bot:AddDropdown("EmergencyServerhopConditions", {
                 Text = "Emergency Serverhop Conditions",
-                Tooltip = "Equipped only: Perflora/Duobe = infinite; Opal Shard = 1200; Justice Spears = 850; Fimbulvetr/Manus Dei/Telorum/Pebble = 650; Celeritas = 600; Vulnere = 500 studs",
+                Tooltip = "Equipped only: Perflora/Duobe = infinite; Opal Shard = 1200; Justice Spears = 850; Fimbulvetr/Manus Dei = 830; Telorum/Pebble = 650; Celeritas = 600; Vulnere = 500 studs",
                 Values = {"Perflora", "Duobe", "Opal Shard", "Justice Spears", "Fimbulvetr", "Manus Dei", "Telorum", "Pebble", "Vulnere", "Celeritas"},
                 Multi = true,
                 Default = {"Perflora", "Pebble", "Celeritas"},
