@@ -19534,58 +19534,57 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if not serverhop_success then
                         local character = plr.Character
 
-                        if character and escape_artist_in_danger and escape_artist_in_danger(character) then
-                            -- Escape Artists normal trigger is deliberately LAST RESORT:
-                            -- only after the normal serverhop attempts have already failed.
-                            -- If a player is still within 50 studs while Danger is active,
-                            -- hand movement over to Escape Artists instead of standing still.
-                            if is_khei
-                                and Toggles
-                                and Toggles.EscapeArtists
-                                and Toggles.EscapeArtists.Value
-                                and type(start_escape_artist) == "function"
-                            then
-                                local local_root = FindFirstChild(character, "HumanoidRootPart")
-                                local humanoid = FindFirstChildOfClass(character, "Humanoid")
-                                local nearest_player = nil
-                                local nearest_distance = math.huge
+                        -- Escape Artists normal trigger is deliberately LAST RESORT:
+                        -- only after the normal serverhop attempts have already failed.
+                        -- No Danger tag is required; a player within 50 studs is enough.
+                        if character
+                            and is_khei
+                            and Toggles
+                            and Toggles.EscapeArtists
+                            and Toggles.EscapeArtists.Value
+                            and type(start_escape_artist) == "function"
+                        then
+                            local local_root = FindFirstChild(character, "HumanoidRootPart")
+                            local humanoid = FindFirstChildOfClass(character, "Humanoid")
+                            local nearest_player = nil
+                            local nearest_distance = math.huge
 
-                                if local_root then
-                                    for _, other_player in next, plrs:GetPlayers() do
-                                        if other_player ~= plr and other_player.Character then
-                                            local other_root = FindFirstChild(other_player.Character, "HumanoidRootPart")
-                                            if other_root then
-                                                local distance = (other_root.Position - local_root.Position).Magnitude
-                                                if distance < nearest_distance then
-                                                    nearest_distance = distance
-                                                    nearest_player = other_player
-                                                end
+                            if local_root then
+                                for _, other_player in next, plrs:GetPlayers() do
+                                    if other_player ~= plr and other_player.Character then
+                                        local other_root = FindFirstChild(other_player.Character, "HumanoidRootPart")
+                                        if other_root then
+                                            local distance = (other_root.Position - local_root.Position).Magnitude
+                                            if distance < nearest_distance then
+                                                nearest_distance = distance
+                                                nearest_player = other_player
                                             end
                                         end
                                     end
                                 end
-
-                                if nearest_player and nearest_distance <= 50 then
-                                    local max_health = humanoid and math.max(tonumber(humanoid.MaxHealth) or 0, 1) or 1
-                                    local health_ratio = humanoid and (humanoid.Health / max_health) or 1
-                                    library:Notify(string.format(
-                                        "!! Serverhop exhausted + %s within %.0f studs - Escape Artists last resort !!",
-                                        nearest_player.Name,
-                                        nearest_distance
-                                    ))
-
-                                    if start_escape_artist(nearest_player, nearest_distance, health_ratio) then
-                                        return
-                                    end
-                                end
                             end
 
+                            if nearest_player and nearest_distance <= ESCAPE_ARTIST_NEAR_RANGE then
+                                local max_health = humanoid and math.max(tonumber(humanoid.MaxHealth) or 0, 1) or 1
+                                local health_ratio = humanoid and (humanoid.Health / max_health) or 1
+                                library:Notify(string.format(
+                                    "!! Serverhop exhausted + %s within %.0f studs - Escape Artists last resort !!",
+                                    nearest_player.Name,
+                                    nearest_distance
+                                ))
+
+                                if start_escape_artist(nearest_player, nearest_distance, health_ratio) then
+                                    return
+                                end
+                            end
+                        end
+
+                        -- The normal trinket-bot serverhop flow can still use Danger for its
+                        -- own retry behavior; Escape Artists itself no longer depends on it.
+                        if character and escape_artist_in_danger and escape_artist_in_danger(character) then
                             library:Notify("!! SERVERHOP FAILED - In combat, waiting for danger to clear !!")
                             utility:plain_webhook("SERVERHOP FAILED - In combat, waiting for danger to clear then retrying")
 
-                            -- Poll the same Danger definition Escape Artists uses. This keeps
-                            -- working whether Khei exposes combat as a CollectionService tag or
-                            -- a child named Danger, and lets the low-HP watcher take over mid-wait.
                             while character
                                 and escape_artist_in_danger
                                 and escape_artist_in_danger(character)
@@ -19750,17 +19749,17 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             -- Escape Artists (Khei only)
-            -- Two trigger priorities:
-            --   1) Danger + HP <70% + player <=100 studs = IMMEDIATE takeover.
-            --   2) Danger + player <=50 studs = LAST RESORT only after normal serverhop
+            -- NO Danger/combat-tag dependency. Two trigger priorities:
+            --   1) HP <70% + player <=100 studs = IMMEDIATE takeover.
+            --   2) Player <=50 studs = LAST RESORT only after normal serverhop
             --      attempts are exhausted.
             -- Movement is fixed at 130 studs/sec. Normalize vertically to Y=250 first
             -- (climb OR descend), then travel toward a random horizontal point 10,000
             -- studs away while zigzagging laterally and vertically. If that endpoint is
-            -- reached while Danger is still active, tween back along the same escape line
+            -- reached before the timer expires, tween back along the same escape line
             -- to a point 6,000 studs from the original X/Z while preserving the current Y,
-            -- then choose a fresh 10,000-stud leg and repeat. As soon as Danger clears,
-            -- webhook + self-kick "Escaped X".
+            -- then choose a fresh 10,000-stud leg and repeat. After 80 seconds from trigger,
+            -- webhook + self-kick "Escaped X" regardless of combat state.
             local ESCAPE_ARTIST_SPEED = 130
             local ESCAPE_ARTIST_ALTITUDE = 250
             local ESCAPE_ARTIST_TRAVEL_DISTANCE = 10000
@@ -19768,6 +19767,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local ESCAPE_ARTIST_NEAR_RANGE = 50
             local ESCAPE_ARTIST_LOW_HP_RANGE = 100
             local ESCAPE_ARTIST_LOW_HP_THRESHOLD = 0.70
+            local ESCAPE_ARTIST_KICK_AFTER = 80
             local ESCAPE_ARTIST_MIN_Y = 200
             local ESCAPE_ARTIST_MAX_Y = 300
 
@@ -19844,10 +19844,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return false
                 end
 
-                if not escape_artist_in_danger(character) then
-                    return false
-                end
-
                 trinket_bot.escape_artist_active = true
                 trinket_bot.path_running = false
                 trinket_bot.gate_in_progress = false
@@ -19890,8 +19886,18 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         if utility then
                             utility:plain_webhook(message)
                         end
-                        plr:Kick(message)
+                        pcall(function()
+                            plr:Kick(message)
+                        end)
                     end
+
+                    -- Escape Artists no longer waits for Danger/combat to clear.
+                    -- Once triggered, it gets exactly 80 seconds before the escaped webhook/kick.
+                    task.delay(ESCAPE_ARTIST_KICK_AFTER, function()
+                        if not finished and trinket_bot.escape_artist_active then
+                            escaped_kick()
+                        end
+                    end)
 
                     -- The normal path moderator connection is cleaned up when the path stops,
                     -- so keep a dedicated watcher alive for the entire escape flight.
@@ -19922,11 +19928,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     -- Phase 1: normalize vertically to Y=250 at exactly 130 studs/sec.
                     -- This works from either side: low positions climb, high positions descend.
                     while character_still_valid() and math.abs(escape_root.Position.Y - ESCAPE_ARTIST_ALTITUDE) > 0.5 do
-                        if not escape_artist_in_danger(escape_character) then
-                            escaped_kick()
-                            return
-                        end
-
                         local dt = rs.Heartbeat:Wait()
                         if not character_still_valid() then break end
 
@@ -19942,13 +19943,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         return
                     end
 
-                    if not escape_artist_in_danger(escape_character) then
-                        escaped_kick()
-                        return
-                    end
-
                     -- Phase 2: repeatedly run a 10,000-stud zigzag escape leg. If the
-                    -- endpoint is actually reached while Danger is still active, tween back
+                    -- endpoint is reached before the 80-second timer expires, tween back
                     -- toward the original X/Z but stop 6,000 studs away from it on the same
                     -- escape line. The tween preserves the Y that the zigzag leg ended at.
                     local function choose_far_direction()
@@ -19986,12 +19982,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         return_tween:Play()
 
                         while character_still_valid() and return_tween.PlaybackState == Enum.PlaybackState.Playing do
-                            if not escape_artist_in_danger(escape_character) then
-                                pcall(function() return_tween:Cancel() end)
-                                escaped_kick()
-                                return false
-                            end
-
                             escape_artist_noclip(escape_character)
                             rs.Heartbeat:Wait()
                         end
@@ -20001,21 +19991,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
 
                     while character_still_valid() do
-                        if not escape_artist_in_danger(escape_character) then
-                            escaped_kick()
-                            return
-                        end
-
                         local forward, destination = choose_far_direction()
                         local started_at = os.clock()
                         local reached_destination = false
 
                         while character_still_valid() do
-                            if not escape_artist_in_danger(escape_character) then
-                                escaped_kick()
-                                return
-                            end
-
                             local to_destination = destination - escape_root.Position
                             local horizontal = Vector3.new(to_destination.X, 0, to_destination.Z)
                             if horizontal.Magnitude <= 25 then
@@ -20056,11 +20036,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             break
                         end
 
-                        if not escape_artist_in_danger(escape_character) then
-                            escaped_kick()
-                            return
-                        end
-
                         if reached_destination then
                             library:Notify("Escape Artists: 10,000-stud endpoint reached - tweening back to 6,000-stud offset")
                             if not tween_return_to_offset(forward) then
@@ -20076,9 +20051,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             -- Dedicated Escape Artists low-HP watcher. This intentionally does NOT depend on
-            -- trinket_bot.path_running: normal proximity/serverhop code can turn path_running
-            -- off while the player is still stuck in combat, which previously disabled the
-            -- <70% HP + <=100 stud takeover exactly when it was needed most.
+            -- Danger or trinket_bot.path_running. HP <70% + a player within 100 studs is enough
+            -- to take over immediately while the trinket-bot session is active.
             start_escape_artist_monitor = function()
                 local token = {}
                 trinket_bot.escape_artist_monitor_token = token
@@ -20102,7 +20076,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 and root
                                 and humanoid
                                 and humanoid.Health > 0
-                                and escape_artist_in_danger(character)
                             then
                                 local max_health = math.max(tonumber(humanoid.MaxHealth) or 0, 1)
                                 local health_ratio = humanoid.Health / max_health
@@ -21234,14 +21207,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     local distance_samples = build_swept_player_samples(bot_root, critical_distance, proximity_check_distance)
 
                     -- Escape Artists LOW-HP takeover has priority over Critical Distance / emergency gating in Khei.
-                    -- This is the one immediate trigger: Danger + HP <70% + player <=100 studs.
-                    -- The normal Danger + <=50 trigger is handled later as a last resort only
-                    -- after serverhop attempts have been exhausted.
+                    -- Immediate trigger: HP <70% + player <=100 studs. No Danger tag required.
+                    -- The normal <=50 trigger is handled later as a last resort only after
+                    -- serverhop attempts have been exhausted.
                     if escape_artists_enabled() and not trinket_bot.escape_artist_active then
                         local character = plr.Character
                         local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
 
-                        if character and humanoid and humanoid.Health > 0 and escape_artist_in_danger(character) then
+                        if character and humanoid and humanoid.Health > 0 then
                             local max_health = math.max(tonumber(humanoid.MaxHealth) or 0, 1)
                             local health_ratio = humanoid.Health / max_health
                             local nearest_player = nil
