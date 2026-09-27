@@ -18676,10 +18676,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local kick_debounce = false
             local kick_after_path = false
             local kick_trinket_name = ""
-            -- On an automatic rejoin, botstarted is already persisted before the Backpack
-            -- finishes replicating. Block pickup/kick monitoring until the startup inventory
-            -- preflight has checked items that were already owned before this server.
-            local startup_inventory_preflight_pending = mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true"
 
             local function queue_trinket_kick(trinket_name, detail_message)
                 if kick_debounce then
@@ -18717,7 +18713,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             local function check_phoenix_flower_kick_threshold()
                 if kick_debounce then return false end
-                if startup_inventory_preflight_pending then return false end
                 if not (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true") then return false end
                 if not (Toggles.KickOnPhoenixFlowerAmount and Toggles.KickOnPhoenixFlowerAmount.Value) then return false end
 
@@ -18729,95 +18724,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     "Phoenix Flower",
                     string.format("Phoenix Flower threshold reached (%d/%d)! Going to last point then kicking.", count, threshold)
                 )
-            end
-
-            local function find_existing_startup_kick_item()
-                if Toggles.KickOnTrinket and Toggles.KickOnTrinket.Value and Options.KickTrinketList and Options.KickTrinketList.Value then
-                    local selected_normalized = {}
-                    for trinket_name, selected in next, Options.KickTrinketList.Value do
-                        if selected ~= false then
-                            selected_normalized[trinket_name:gsub(" ", "")] = trinket_name
-                        end
-                    end
-
-                    local function scan_container(container)
-                        if not container then return nil end
-                        for _, obj in ipairs(container:GetChildren()) do
-                            if obj:IsA("Tool") then
-                                local matched_name = selected_normalized[obj.Name:gsub(" ", "")]
-                                if matched_name then
-                                    return matched_name
-                                end
-                            end
-                        end
-                        return nil
-                    end
-
-                    local matched_name = scan_container(FindFirstChild(plr, "Backpack")) or scan_container(plr.Character)
-                    if matched_name then
-                        return matched_name, nil, nil
-                    end
-                end
-
-                if Toggles.KickOnPhoenixFlowerAmount and Toggles.KickOnPhoenixFlowerAmount.Value then
-                    local threshold = math.clamp(math.floor(tonumber(Options.PhoenixFlowerKickAmount and Options.PhoenixFlowerKickAmount.Value or 1) or 1), 1, 50)
-                    local count = get_phoenix_flower_count()
-                    if count >= threshold then
-                        return "Phoenix Flower", count, threshold
-                    end
-                end
-
-                return nil, nil, nil
-            end
-
-            local function startup_inventory_preflight_stop_bot(settle_seconds)
-                -- Scan more than once because Backpack contents can finish replicating just
-                -- after Character/HRP appears on an automatic rejoin. Auto-rejoin gives the
-                -- inventory a longer settle window; an already-present match exits immediately.
-                settle_seconds = math.max(tonumber(settle_seconds) or 0.4, 0)
-                local started_at = os.clock()
-                local item_name, pf_count, pf_threshold
-
-                repeat
-                    item_name, pf_count, pf_threshold = find_existing_startup_kick_item()
-                    if item_name then
-                        break
-                    end
-                    task.wait(0.1)
-                until (os.clock() - started_at) >= settle_seconds
-
-                startup_inventory_preflight_pending = false
-
-                if not item_name then
-                    return false
-                end
-
-                trinket_bot.path_running = false
-                trinket_bot.gate_in_progress = false
-                trinket_bot.escape_artist_active = false
-                trinket_bot.escape_artist_monitor_token = nil
-
-                kick_after_path = false
-                kick_debounce = false
-                kick_trinket_name = ""
-
-                mem:RemoveItem("botstarted")
-                mem:RemoveItem("serverhop_count")
-
-                if pf_count and pf_threshold then
-                    library:Notify(string.format(
-                        "Bot stopped before startup: already have %d/%d Phoenix Flowers.",
-                        pf_count,
-                        pf_threshold
-                    ))
-                else
-                    library:Notify(string.format(
-                        "Bot stopped before startup: %s is already in inventory and is selected for Kick on Trinket.",
-                        item_name
-                    ))
-                end
-
-                return true
             end
 
             local proximity_warnings = {}
@@ -20993,17 +20899,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 test_mode = test_mode or false
                 trinket_bot.test_mode = test_mode
 
-                -- FIRST real bot-start check for a fresh manual session. Automatic rejoins
-                -- run the same preflight immediately after the character/inventory loads below.
-                -- Internal ExecutePath resumes (Gate/emergency/stay-in-server) must not reinterpret
-                -- items picked up during the current run as pre-existing startup inventory.
-                local persisted_bot_session = mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true"
-                if not test_mode and (startup_inventory_preflight_pending or not persisted_bot_session) then
-                    if startup_inventory_preflight_stop_bot(0.4) then
-                        return
-                    end
-                end
-
                 droppedTools = {}
                 currently_dropping = false
                 trinket_bot.gate_in_progress = false
@@ -21139,6 +21034,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if start_escape_artist_monitor then
                         start_escape_artist_monitor()
                     end
+
+                    -- If the bot starts with enough Phoenix Flowers already in inventory,
+                    -- arm the same end-of-path kick immediately instead of waiting for another pickup.
+                    check_phoenix_flower_kick_threshold()
 
                     if not mem:HasItem("serverhop_count") then
                         mem:SetItem("serverhop_count", "0")
@@ -24782,12 +24681,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         repeat task.wait(0.25) until plr.Character:FindFirstChild("HumanoidRootPart")
                         task.wait(1)
 
-                        -- Automatic rejoin preflight happens before saved-position recovery,
-                        -- SmoothTeleport, Gate recovery, or ExecutePath can do any bot work.
-                        if startup_inventory_preflight_stop_bot(2.5) then
-                            return
-                        end
-
                         local auto_start_death_connection
                         local character = plr.Character
                         if character then
@@ -26192,11 +26085,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                     local bot_started = mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true"
                     if not bot_started then return end
-
-                    -- During an automatic rejoin, inventory may replicate through ChildAdded
-                    -- before the preflight scan runs. Treat those as pre-existing inventory,
-                    -- not as fresh pickups, and let the preflight decide whether to stop.
-                    if startup_inventory_preflight_pending then return end
 
                     if not obj:IsA("Tool") then return end
 
