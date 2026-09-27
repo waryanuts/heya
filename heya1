@@ -12312,7 +12312,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             -- noclip, keep Verdien equipped, charge mana to full, cast, and repeat every
             -- 8 seconds. A player entering 200 studs immediately interrupts the farm and
             -- runs the emergency escape path before disabling the toggle.
-            local DESERT_MIST_FARM_POSITION = Vector3.new(-1199.622, 319.549, 688.112)
+            local DESERT_MIST_FARM_POSITION = Vector3.new(-1199.622, 322.549, 688.112)
             local DESERT_MIST_ESCAPE_POSITION = Vector3.new(-1402.144, 511.998, 1030.832)
             local DESERT_MIST_START_RADIUS = 700
             local DESERT_MIST_PLAYER_RADIUS = 200
