@@ -618,6 +618,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             auto_knock_severity = 50,
             pop_phoenix_flowers = false,
             offset_mobs_exploit = false,
+            desert_mist_farm = false,
             no_killbrick = false,
             no_mob_trigger = false,
             freecam = false,
@@ -12304,6 +12305,552 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             })
 
+
+            -- Desert Mist Farm
+            -- While enabled near the Desert Mist farm point, tween to the farm spot with
+            -- noclip, keep Verdien equipped, charge mana to full, cast, and repeat every
+            -- 8 seconds. A player entering 200 studs immediately interrupts the farm and
+            -- runs the emergency escape path before disabling the toggle.
+            local DESERT_MIST_FARM_POSITION = Vector3.new(-1199.622, 319.549, 688.112)
+            local DESERT_MIST_ESCAPE_POSITION = Vector3.new(-1402.144, 511.998, 1030.832)
+            local DESERT_MIST_START_RADIUS = 700
+            local DESERT_MIST_PLAYER_RADIUS = 200
+            local DESERT_MIST_ESCAPE_DROP = 100
+            local DESERT_MIST_LOOP_DELAY = 8
+            local DESERT_MIST_TWEEN_SPEED = 150
+            local DESERT_MIST_TOOL = "Verdien"
+
+            local desert_mist_farm_running = false
+            local desert_mist_farm_escaping = false
+            local desert_mist_hold_position = false
+            local desert_mist_active_tween = nil
+            local desert_mist_noclip_connection = nil
+            local desert_mist_collision_states = setmetatable({}, {__mode = "k"})
+
+            local function desert_mist_enabled()
+                return shared
+                    and not shared.is_unloading
+                    and Toggles
+                    and Toggles.desert_mist_farm
+                    and Toggles.desert_mist_farm.Value
+            end
+
+            local function desert_mist_get_character()
+                local character = plr.Character
+                local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
+                local root = character and FindFirstChild(character, "HumanoidRootPart")
+
+                if not character or not humanoid or humanoid.Health <= 0 or not root then
+                    return nil, nil, nil
+                end
+
+                return character, humanoid, root
+            end
+
+            local function desert_mist_player_near(radius)
+                local _, _, root = desert_mist_get_character()
+                if not root then
+                    return false, nil, math.huge
+                end
+
+                local closest_name = nil
+                local closest_distance = math.huge
+
+                for _, other_player in ipairs(plrs:GetPlayers()) do
+                    if other_player ~= plr and other_player.Character then
+                        local other_root = FindFirstChild(other_player.Character, "HumanoidRootPart")
+                        local other_humanoid = FindFirstChildOfClass(other_player.Character, "Humanoid")
+
+                        if other_root and (not other_humanoid or other_humanoid.Health > 0) then
+                            local distance = (other_root.Position - root.Position).Magnitude
+                            if distance < closest_distance then
+                                closest_distance = distance
+                                closest_name = other_player.Name
+                            end
+                        end
+                    end
+                end
+
+                return closest_distance <= (radius or DESERT_MIST_PLAYER_RADIUS), closest_name, closest_distance
+            end
+
+            local function desert_mist_apply_noclip(character)
+                if not character or not character.Parent then
+                    return
+                end
+
+                for _, object in ipairs(character:GetDescendants()) do
+                    if object:IsA("BasePart") then
+                        if desert_mist_collision_states[object] == nil then
+                            desert_mist_collision_states[object] = object.CanCollide
+                        end
+                        object.CanCollide = false
+                    end
+                end
+            end
+
+            local function desert_mist_restore_collision()
+                local normal_noclip_on = Toggles and Toggles.noclip and Toggles.noclip.Value
+
+                if not normal_noclip_on then
+                    for part, can_collide in pairs(desert_mist_collision_states) do
+                        if part and part.Parent and part:IsA("BasePart") then
+                            pcall(function()
+                                part.CanCollide = can_collide
+                            end)
+                        end
+                    end
+                end
+
+                table.clear(desert_mist_collision_states)
+            end
+
+            local function desert_mist_start_noclip()
+                if desert_mist_noclip_connection then
+                    return
+                end
+
+                desert_mist_noclip_connection = utility:Connection(rs.RenderStepped, function()
+                    if shared.is_unloading or not desert_mist_enabled() then
+                        return
+                    end
+
+                    local character, _, root = desert_mist_get_character()
+                    if not character or not root then
+                        return
+                    end
+
+                    desert_mist_apply_noclip(character)
+
+                    if desert_mist_hold_position and not desert_mist_farm_escaping then
+                        root.AssemblyLinearVelocity = Vector3.zero
+                        root.AssemblyAngularVelocity = Vector3.zero
+
+                        if (root.Position - DESERT_MIST_FARM_POSITION).Magnitude > 0.75 then
+                            local rotation_only = root.CFrame - root.Position
+                            root.CFrame = CFrame.new(DESERT_MIST_FARM_POSITION) * rotation_only
+                        end
+                    end
+                end)
+            end
+
+            local function desert_mist_stop_noclip()
+                if desert_mist_noclip_connection then
+                    desert_mist_noclip_connection:Disconnect()
+                    desert_mist_noclip_connection = nil
+                end
+
+                desert_mist_restore_collision()
+            end
+
+            local function desert_mist_cancel_tween()
+                if desert_mist_active_tween then
+                    pcall(function()
+                        desert_mist_active_tween:Cancel()
+                    end)
+                    desert_mist_active_tween = nil
+                end
+            end
+
+            local function desert_mist_cleanup()
+                desert_mist_hold_position = false
+                desert_mist_cancel_tween()
+                desert_mist_stop_noclip()
+            end
+
+            local function desert_mist_disable_toggle()
+                cheat_client.config.desert_mist_farm = false
+
+                local toggle = Toggles and Toggles.desert_mist_farm
+                if toggle and toggle.Value then
+                    toggle:SetValue(false)
+                else
+                    desert_mist_cleanup()
+                end
+            end
+
+            local function desert_mist_tween_to(position, watch_players)
+                local character, humanoid, root = desert_mist_get_character()
+                if not character or not humanoid or not root then
+                    return false, "character"
+                end
+
+                desert_mist_start_noclip()
+                desert_mist_apply_noclip(character)
+                desert_mist_cancel_tween()
+
+                local distance = (root.Position - position).Magnitude
+                if distance <= 0.5 then
+                    local rotation_only = root.CFrame - root.Position
+                    root.CFrame = CFrame.new(position) * rotation_only
+                    root.AssemblyLinearVelocity = Vector3.zero
+                    root.AssemblyAngularVelocity = Vector3.zero
+                    return true, "complete"
+                end
+
+                pcall(function()
+                    humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, false)
+                    humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+                end)
+
+                local function restore_humanoid_state()
+                    pcall(function()
+                        if humanoid and humanoid.Parent then
+                            humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
+                            humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+                        end
+                    end)
+                end
+
+                local rotation_only = root.CFrame - root.Position
+                local duration = math.max(distance / DESERT_MIST_TWEEN_SPEED, 0.05)
+                local tween = ts:Create(
+                    root,
+                    TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut),
+                    {CFrame = CFrame.new(position) * rotation_only}
+                )
+
+                desert_mist_active_tween = tween
+                tween:Play()
+
+                while desert_mist_enabled()
+                    and desert_mist_active_tween == tween
+                    and tween.PlaybackState == Enum.PlaybackState.Playing
+                do
+                    local current_character, _, current_root = desert_mist_get_character()
+                    if not current_character or not current_root then
+                        pcall(function() tween:Cancel() end)
+                        desert_mist_active_tween = nil
+                        restore_humanoid_state()
+                        return false, "character"
+                    end
+
+                    desert_mist_apply_noclip(current_character)
+
+                    if watch_players then
+                        local player_near = desert_mist_player_near(DESERT_MIST_PLAYER_RADIUS)
+                        if player_near then
+                            pcall(function() tween:Cancel() end)
+                            desert_mist_active_tween = nil
+                            restore_humanoid_state()
+                            return false, "player"
+                        end
+                    end
+
+                    rs.Heartbeat:Wait()
+                end
+
+                local completed = tween.PlaybackState == Enum.PlaybackState.Completed
+                if desert_mist_active_tween == tween then
+                    desert_mist_active_tween = nil
+                end
+
+                restore_humanoid_state()
+
+                if not desert_mist_enabled() then
+                    pcall(function() tween:Cancel() end)
+                    return false, "disabled"
+                end
+
+                if completed then
+                    local current_character, _, current_root = desert_mist_get_character()
+                    if current_character and current_root then
+                        desert_mist_apply_noclip(current_character)
+                        current_root.AssemblyLinearVelocity = Vector3.zero
+                        current_root.AssemblyAngularVelocity = Vector3.zero
+                    end
+                    return true, "complete"
+                end
+
+                return false, "cancelled"
+            end
+
+            local function desert_mist_find_verdien()
+                local character = plr.Character
+                local backpack = plr:FindFirstChildOfClass("Backpack")
+
+                return (character and FindFirstChild(character, DESERT_MIST_TOOL))
+                    or (backpack and FindFirstChild(backpack, DESERT_MIST_TOOL))
+            end
+
+            local function desert_mist_equip_verdien()
+                local character, humanoid = desert_mist_get_character()
+                if not character or not humanoid then
+                    return nil
+                end
+
+                local tool = desert_mist_find_verdien()
+                if not tool or not tool:IsA("Tool") then
+                    return nil
+                end
+
+                if tool.Parent ~= character then
+                    pcall(function()
+                        humanoid:EquipTool(tool)
+                    end)
+                    task.wait(0.05)
+                end
+
+                return FindFirstChild(character, DESERT_MIST_TOOL)
+            end
+
+            local function desert_mist_can_charge(character)
+                if not character or FindFirstChildWhichIsA(character, "ForceField") then
+                    return false
+                end
+
+                if FindFirstChild(character, "Grabbed") then return false end
+                if FindFirstChild(character, "Climbing") then return false end
+                if FindFirstChild(character, "ClimbCoolDown") then return false end
+                if FindFirstChild(character, "ManaStop") then return false end
+                if FindFirstChild(character, "SpellBlocking") then return false end
+                if FindFirstChild(character, "ActiveCast") then return false end
+                if FindFirstChild(character, "Stun") then return false end
+                if cs:HasTag(character, "Knocked") then return false end
+                if cs:HasTag(character, "Unconscious") then return false end
+
+                return true
+            end
+
+            local function desert_mist_initialize_mana_remote()
+                if mana_remote or not vim then
+                    return
+                end
+
+                pcall(function()
+                    vim:SendKeyEvent(true, Enum.KeyCode.G, false, game)
+                    task.wait(0.15)
+                    vim:SendKeyEvent(false, Enum.KeyCode.G, false, game)
+                end)
+                task.wait(0.2)
+            end
+
+            local function desert_mist_charge_full()
+                local character = plr.Character
+                local mana = character and FindFirstChild(character, "Mana")
+                if not character or not mana or not utility then
+                    return false, "retry"
+                end
+
+                desert_mist_initialize_mana_remote()
+                if not mana_remote or not utility.charge_mana or not utility.decharge_mana then
+                    return false, "retry"
+                end
+
+                if not desert_mist_can_charge(character) then
+                    return false, "retry"
+                end
+
+                if FindFirstChild(character, "Charge") then
+                    utility:decharge_mana()
+                    task.wait(0.15)
+                end
+
+                local started_at = os.clock()
+                while desert_mist_enabled() and mana.Parent == character and mana.Value < 100 do
+                    local player_near = desert_mist_player_near(DESERT_MIST_PLAYER_RADIUS)
+                    if player_near then
+                        if FindFirstChild(character, "Charge") then
+                            utility:decharge_mana()
+                        end
+                        return false, "player"
+                    end
+
+                    if not desert_mist_can_charge(character) then
+                        if FindFirstChild(character, "Charge") then
+                            utility:decharge_mana()
+                        end
+                        return false, "retry"
+                    end
+
+                    -- Keep Verdien equipped even while the mana charge itself is running.
+                    desert_mist_equip_verdien()
+                    utility:charge_mana()
+                    task.wait(0.08)
+
+                    -- Avoid hanging forever if mana cannot increase for some transient reason.
+                    if os.clock() - started_at >= 10 then
+                        if FindFirstChild(character, "Charge") then
+                            utility:decharge_mana()
+                        end
+                        return false, "retry"
+                    end
+                end
+
+                if FindFirstChild(character, "Charge") then
+                    utility:decharge_mana()
+                end
+
+                return desert_mist_enabled() and mana.Value >= 100, "complete"
+            end
+
+            local function desert_mist_wait_interval(seconds)
+                local deadline = os.clock() + seconds
+
+                while desert_mist_enabled() and os.clock() < deadline do
+                    local player_near = desert_mist_player_near(DESERT_MIST_PLAYER_RADIUS)
+                    if player_near then
+                        return false, "player"
+                    end
+
+                    desert_mist_equip_verdien()
+                    task.wait(0.1)
+                end
+
+                if not desert_mist_enabled() then
+                    return false, "disabled"
+                end
+
+                return true, "complete"
+            end
+
+            local function desert_mist_escape()
+                if desert_mist_farm_escaping then
+                    return
+                end
+
+                desert_mist_farm_escaping = true
+                desert_mist_hold_position = false
+
+                local _, player_name, player_distance = desert_mist_player_near(DESERT_MIST_PLAYER_RADIUS)
+                if player_name and player_distance < math.huge then
+                    library:Notify(string.format(
+                        "Desert Mist Farm: %s is within %.0f studs - escaping",
+                        player_name,
+                        player_distance
+                    ))
+                else
+                    library:Notify("Desert Mist Farm: player nearby - escaping")
+                end
+
+                local _, _, root = desert_mist_get_character()
+                if root and desert_mist_enabled() then
+                    local below_position = root.Position - Vector3.new(0, DESERT_MIST_ESCAPE_DROP, 0)
+                    local dropped = desert_mist_tween_to(below_position, false)
+
+                    if dropped and desert_mist_enabled() then
+                        desert_mist_tween_to(DESERT_MIST_ESCAPE_POSITION, false)
+                    end
+                end
+
+                desert_mist_farm_escaping = false
+                desert_mist_disable_toggle()
+            end
+
+            local function run_desert_mist_farm()
+                if desert_mist_farm_running then
+                    return
+                end
+
+                desert_mist_farm_running = true
+                desert_mist_farm_escaping = false
+                desert_mist_hold_position = false
+                desert_mist_start_noclip()
+
+                local character, _, root = desert_mist_get_character()
+                if not character or not root then
+                    library:Notify("Desert Mist Farm: character is not ready")
+                    desert_mist_disable_toggle()
+                    desert_mist_farm_running = false
+                    return
+                end
+
+                local initial_distance = (root.Position - DESERT_MIST_FARM_POSITION).Magnitude
+                if initial_distance > DESERT_MIST_START_RADIUS then
+                    library:Notify(string.format(
+                        "Desert Mist Farm: you must be within %d studs of the farm point",
+                        DESERT_MIST_START_RADIUS
+                    ))
+                    desert_mist_disable_toggle()
+                    desert_mist_farm_running = false
+                    return
+                end
+
+                local player_near = desert_mist_player_near(DESERT_MIST_PLAYER_RADIUS)
+                if player_near then
+                    desert_mist_escape()
+                    desert_mist_farm_running = false
+                    return
+                end
+
+                local reached_farm, reason = desert_mist_tween_to(DESERT_MIST_FARM_POSITION, true)
+                if not reached_farm then
+                    if reason == "player" and desert_mist_enabled() then
+                        desert_mist_escape()
+                    elseif desert_mist_enabled() then
+                        desert_mist_disable_toggle()
+                    end
+                    desert_mist_farm_running = false
+                    return
+                end
+
+                desert_mist_hold_position = true
+
+                while desert_mist_enabled() do
+                    player_near = desert_mist_player_near(DESERT_MIST_PLAYER_RADIUS)
+                    if player_near then
+                        desert_mist_escape()
+                        break
+                    end
+
+                    local verdien = desert_mist_equip_verdien()
+                    if not verdien then
+                        task.wait(0.1)
+                        continue
+                    end
+
+                    local charged, charge_reason = desert_mist_charge_full()
+                    if not charged then
+                        if charge_reason == "player" and desert_mist_enabled() then
+                            desert_mist_escape()
+                            break
+                        end
+
+                        task.wait(0.1)
+                        continue
+                    end
+
+                    player_near = desert_mist_player_near(DESERT_MIST_PLAYER_RADIUS)
+                    if player_near then
+                        desert_mist_escape()
+                        break
+                    end
+
+                    verdien = desert_mist_equip_verdien()
+                    if verdien and utility and utility.LeftClick then
+                        utility:LeftClick()
+                    end
+
+                    local waited, wait_reason = desert_mist_wait_interval(DESERT_MIST_LOOP_DELAY)
+                    if not waited then
+                        if wait_reason == "player" and desert_mist_enabled() then
+                            desert_mist_escape()
+                        end
+                        break
+                    end
+                end
+
+                desert_mist_cleanup()
+                desert_mist_farm_running = false
+            end
+
+            group_exploits:AddToggle("desert_mist_farm", {
+                Text = "Desert Mist Farm",
+                Default = cheat_client.config.desert_mist_farm,
+                Tooltip = "Within 700 studs, tweens to the Desert Mist farm point, keeps Verdien equipped, charges to full mana and casts every 8 seconds. If a player comes within 200 studs, drops 100 studs, escapes, then disables itself.",
+                Callback = function(value)
+                    cheat_client.config.desert_mist_farm = value
+
+                    if value then
+                        if not desert_mist_farm_running then
+                            task.spawn(run_desert_mist_farm)
+                        end
+                    else
+                        desert_mist_cleanup()
+                    end
+                end
+            })
+
             if is_khei then
                 group_exploits:AddDivider()
 
@@ -18129,6 +18676,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local kick_debounce = false
             local kick_after_path = false
             local kick_trinket_name = ""
+            -- On an automatic rejoin, botstarted is already persisted before the Backpack
+            -- finishes replicating. Block pickup/kick monitoring until the startup inventory
+            -- preflight has checked items that were already owned before this server.
+            local startup_inventory_preflight_pending = mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true"
 
             local function queue_trinket_kick(trinket_name, detail_message)
                 if kick_debounce then
@@ -18166,6 +18717,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             local function check_phoenix_flower_kick_threshold()
                 if kick_debounce then return false end
+                if startup_inventory_preflight_pending then return false end
                 if not (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true") then return false end
                 if not (Toggles.KickOnPhoenixFlowerAmount and Toggles.KickOnPhoenixFlowerAmount.Value) then return false end
 
@@ -18177,6 +18729,95 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     "Phoenix Flower",
                     string.format("Phoenix Flower threshold reached (%d/%d)! Going to last point then kicking.", count, threshold)
                 )
+            end
+
+            local function find_existing_startup_kick_item()
+                if Toggles.KickOnTrinket and Toggles.KickOnTrinket.Value and Options.KickTrinketList and Options.KickTrinketList.Value then
+                    local selected_normalized = {}
+                    for trinket_name, selected in next, Options.KickTrinketList.Value do
+                        if selected ~= false then
+                            selected_normalized[trinket_name:gsub(" ", "")] = trinket_name
+                        end
+                    end
+
+                    local function scan_container(container)
+                        if not container then return nil end
+                        for _, obj in ipairs(container:GetChildren()) do
+                            if obj:IsA("Tool") then
+                                local matched_name = selected_normalized[obj.Name:gsub(" ", "")]
+                                if matched_name then
+                                    return matched_name
+                                end
+                            end
+                        end
+                        return nil
+                    end
+
+                    local matched_name = scan_container(FindFirstChild(plr, "Backpack")) or scan_container(plr.Character)
+                    if matched_name then
+                        return matched_name, nil, nil
+                    end
+                end
+
+                if Toggles.KickOnPhoenixFlowerAmount and Toggles.KickOnPhoenixFlowerAmount.Value then
+                    local threshold = math.clamp(math.floor(tonumber(Options.PhoenixFlowerKickAmount and Options.PhoenixFlowerKickAmount.Value or 1) or 1), 1, 50)
+                    local count = get_phoenix_flower_count()
+                    if count >= threshold then
+                        return "Phoenix Flower", count, threshold
+                    end
+                end
+
+                return nil, nil, nil
+            end
+
+            local function startup_inventory_preflight_stop_bot(settle_seconds)
+                -- Scan more than once because Backpack contents can finish replicating just
+                -- after Character/HRP appears on an automatic rejoin. Auto-rejoin gives the
+                -- inventory a longer settle window; an already-present match exits immediately.
+                settle_seconds = math.max(tonumber(settle_seconds) or 0.4, 0)
+                local started_at = os.clock()
+                local item_name, pf_count, pf_threshold
+
+                repeat
+                    item_name, pf_count, pf_threshold = find_existing_startup_kick_item()
+                    if item_name then
+                        break
+                    end
+                    task.wait(0.1)
+                until (os.clock() - started_at) >= settle_seconds
+
+                startup_inventory_preflight_pending = false
+
+                if not item_name then
+                    return false
+                end
+
+                trinket_bot.path_running = false
+                trinket_bot.gate_in_progress = false
+                trinket_bot.escape_artist_active = false
+                trinket_bot.escape_artist_monitor_token = nil
+
+                kick_after_path = false
+                kick_debounce = false
+                kick_trinket_name = ""
+
+                mem:RemoveItem("botstarted")
+                mem:RemoveItem("serverhop_count")
+
+                if pf_count and pf_threshold then
+                    library:Notify(string.format(
+                        "Bot stopped before startup: already have %d/%d Phoenix Flowers.",
+                        pf_count,
+                        pf_threshold
+                    ))
+                else
+                    library:Notify(string.format(
+                        "Bot stopped before startup: %s is already in inventory and is selected for Kick on Trinket.",
+                        item_name
+                    ))
+                end
+
+                return true
             end
 
             local proximity_warnings = {}
@@ -20352,6 +20993,17 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 test_mode = test_mode or false
                 trinket_bot.test_mode = test_mode
 
+                -- FIRST real bot-start check for a fresh manual session. Automatic rejoins
+                -- run the same preflight immediately after the character/inventory loads below.
+                -- Internal ExecutePath resumes (Gate/emergency/stay-in-server) must not reinterpret
+                -- items picked up during the current run as pre-existing startup inventory.
+                local persisted_bot_session = mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true"
+                if not test_mode and (startup_inventory_preflight_pending or not persisted_bot_session) then
+                    if startup_inventory_preflight_stop_bot(0.4) then
+                        return
+                    end
+                end
+
                 droppedTools = {}
                 currently_dropping = false
                 trinket_bot.gate_in_progress = false
@@ -20487,10 +21139,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if start_escape_artist_monitor then
                         start_escape_artist_monitor()
                     end
-
-                    -- If the bot starts with enough Phoenix Flowers already in inventory,
-                    -- arm the same end-of-path kick immediately instead of waiting for another pickup.
-                    check_phoenix_flower_kick_threshold()
 
                     if not mem:HasItem("serverhop_count") then
                         mem:SetItem("serverhop_count", "0")
@@ -24134,6 +24782,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         repeat task.wait(0.25) until plr.Character:FindFirstChild("HumanoidRootPart")
                         task.wait(1)
 
+                        -- Automatic rejoin preflight happens before saved-position recovery,
+                        -- SmoothTeleport, Gate recovery, or ExecutePath can do any bot work.
+                        if startup_inventory_preflight_stop_bot(2.5) then
+                            return
+                        end
+
                         local auto_start_death_connection
                         local character = plr.Character
                         if character then
@@ -25538,6 +26192,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                     local bot_started = mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true"
                     if not bot_started then return end
+
+                    -- During an automatic rejoin, inventory may replicate through ChildAdded
+                    -- before the preflight scan runs. Treat those as pre-existing inventory,
+                    -- not as fresh pickups, and let the preflight decide whether to stop.
+                    if startup_inventory_preflight_pending then return end
 
                     if not obj:IsA("Tool") then return end
 
