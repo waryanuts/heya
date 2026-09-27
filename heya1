@@ -12312,7 +12312,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             -- noclip, keep Verdien equipped, charge mana to full, cast, and repeat every
             -- 8 seconds. A player entering 200 studs immediately interrupts the farm and
             -- runs the emergency escape path before disabling the toggle.
-            local DESERT_MIST_FARM_POSITION = Vector3.new(-1199.622, 322.549, 688.112)
+            local DESERT_MIST_FARM_POSITION = Vector3.new(-1199.622, 324.549, 688.112)
             local DESERT_MIST_ESCAPE_POSITION = Vector3.new(-1402.144, 511.998, 1030.832)
             local DESERT_MIST_START_RADIUS = 700
             local DESERT_MIST_PLAYER_RADIUS = 200
@@ -12331,6 +12331,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local function desert_mist_enabled()
                 return shared
                     and not shared.is_unloading
+                    and cheat_client.config.desert_mist_farm == true
                     and Toggles
                     and Toggles.desert_mist_farm
                     and Toggles.desert_mist_farm.Value
@@ -12471,6 +12472,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             local function desert_mist_tween_to(position, watch_players)
+                -- Hard stop: never create/recreate a tween after the toggle has been turned off.
+                -- Checking the config as well as the UI toggle avoids callback ordering races.
+                if not desert_mist_enabled() then
+                    return false, "disabled"
+                end
+
                 local character, humanoid, root = desert_mist_get_character()
                 if not character or not humanoid or not root then
                     return false, "character"
@@ -12746,6 +12753,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 desert_mist_farm_running = true
                 desert_mist_farm_escaping = false
                 desert_mist_hold_position = false
+
+                -- A toggle-on task can be queued for a frame. If the user turns the toggle
+                -- back off before this coroutine actually starts, exit without moving at all.
+                if not desert_mist_enabled() then
+                    desert_mist_cleanup()
+                    desert_mist_farm_running = false
+                    return
+                end
+
                 desert_mist_start_noclip()
 
                 local character, _, root = desert_mist_get_character()
@@ -12847,6 +12863,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             task.spawn(run_desert_mist_farm)
                         end
                     else
+                        -- Manual OFF is an immediate hard stop. config is already false here,
+                        -- so any in-flight/queued tween sees desert_mist_enabled() == false.
+                        desert_mist_hold_position = false
+                        desert_mist_cancel_tween()
                         desert_mist_cleanup()
                     end
                 end
