@@ -18817,7 +18817,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 trinket_bot.path_running = false
                 trinket_bot.gate_in_progress = false
                 trinket_bot.escape_artist_active = false
-                trinket_bot.escape_artist_monitor_token = nil
 
                 kick_after_path = false
                 kick_debounce = false
@@ -21011,77 +21010,124 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return true
             end
 
-            -- Dedicated Escape Artists low-HP watcher. This intentionally does NOT depend on
-            -- Danger or trinket_bot.path_running. HP <80% + a player within 100 studs is enough
-            -- to take over immediately while the trinket-bot session is active.
+            -- Session-level Escape Artists watcher (Khei only).
+            --
+            -- This watcher is owned by the trinket-bot SESSION, not ExecutePath. It is
+            -- started once when the hub loads and remains alive even if ExecutePath returns,
+            -- errors, sets path_running=false, or cleans up its own connections.
+            --
+            -- While mem.botstarted == "true":
+            --   1) HP <80% + another player <=100 studs triggers Escape Artists immediately.
+            --   2) Moderator joins are handled here too, independent of the path's mod watcher.
+            --
+            -- When botstarted is false the watcher simply sleeps; manual Stop Bot therefore
+            -- disarms it without destroying/recreating the session-level monitor.
             start_escape_artist_monitor = function()
-                local token = {}
-                trinket_bot.escape_artist_monitor_token = token
+                if trinket_bot.escape_artist_session_monitor_started then
+                    return
+                end
+                trinket_bot.escape_artist_session_monitor_started = true
 
                 task.spawn(function()
-                    while trinket_bot.escape_artist_monitor_token == token and not shared.is_unloading do
-                        local bot_session_active = trinket_bot.path_running
-                            or trinket_bot.escape_artist_active
-                            or (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true")
+                    local was_session_active = false
+                    local moderator_connection = nil
 
-                        if not bot_session_active then
-                            break
+                    local function bot_session_active()
+                        return mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true"
+                    end
+
+                    moderator_connection = utility:Connection(plrs.PlayerAdded, function(player)
+                        if not bot_session_active()
+                            or not escape_artists_enabled()
+                            or trinket_bot.escape_artist_active
+                        then
+                            return
                         end
 
-                        if escape_artists_enabled() and not trinket_bot.escape_artist_active then
-                            local character = plr.Character
-                            local root = character and FindFirstChild(character, "HumanoidRootPart")
-                            local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
+                        if is_moderator(player) then
+                            escape_artist_moderator_kick(player)
+                        end
+                    end)
 
-                            if character
-                                and root
-                                and humanoid
-                                and humanoid.Health > 0
+                    while shared and not shared.is_unloading do
+                        local session_active_now = bot_session_active()
+
+                        if session_active_now then
+                            -- Scan players already present once when a new/persisted bot session
+                            -- becomes active. PlayerAdded above handles later moderator joins.
+                            local moderator_kicked = false
+                            if not was_session_active and escape_artists_enabled() then
+                                for _, other_player in next, plrs:GetPlayers() do
+                                    if other_player ~= plr and is_moderator(other_player) then
+                                        moderator_kicked = escape_artist_moderator_kick(other_player) or moderator_kicked
+                                        if moderator_kicked then
+                                            break
+                                        end
+                                    end
+                                end
+                            end
+
+                            if not moderator_kicked
+                                and escape_artists_enabled()
+                                and not trinket_bot.escape_artist_active
                             then
-                                local max_health = math.max(tonumber(humanoid.MaxHealth) or 0, 1)
-                                local health_ratio = humanoid.Health / max_health
+                                local character = plr.Character
+                                local root = character and FindFirstChild(character, "HumanoidRootPart")
+                                local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
 
-                                if health_ratio < ESCAPE_ARTIST_LOW_HP_THRESHOLD then
-                                    local nearest_player = nil
-                                    local nearest_distance = math.huge
+                                if character
+                                    and root
+                                    and humanoid
+                                    and humanoid.Health > 0
+                                then
+                                    local max_health = math.max(tonumber(humanoid.MaxHealth) or 0, 1)
+                                    local health_ratio = humanoid.Health / max_health
 
-                                    for _, other_player in next, plrs:GetPlayers() do
-                                        if other_player ~= plr and other_player.Character then
-                                            local other_root = FindFirstChild(other_player.Character, "HumanoidRootPart")
-                                            if other_root then
-                                                local distance = (other_root.Position - root.Position).Magnitude
-                                                if distance < nearest_distance then
-                                                    nearest_distance = distance
-                                                    nearest_player = other_player
+                                    if health_ratio < ESCAPE_ARTIST_LOW_HP_THRESHOLD then
+                                        local nearest_player = nil
+                                        local nearest_distance = math.huge
+
+                                        for _, other_player in next, plrs:GetPlayers() do
+                                            if other_player ~= plr and other_player.Character then
+                                                local other_root = FindFirstChild(other_player.Character, "HumanoidRootPart")
+                                                if other_root then
+                                                    local distance = (other_root.Position - root.Position).Magnitude
+                                                    if distance < nearest_distance then
+                                                        nearest_distance = distance
+                                                        nearest_player = other_player
+                                                    end
                                                 end
                                             end
                                         end
-                                    end
 
-                                    if nearest_player and nearest_distance <= ESCAPE_ARTIST_LOW_HP_RANGE then
-                                        library:Notify(string.format(
-                                            "!! Escape Artists low-HP takeover: %s %.0f studs, %d%% HP !!",
-                                            nearest_player.Name,
-                                            nearest_distance,
-                                            math.floor((health_ratio * 100) + 0.5)
-                                        ))
+                                        if nearest_player and nearest_distance <= ESCAPE_ARTIST_LOW_HP_RANGE then
+                                            library:Notify(string.format(
+                                                "!! Escape Artists low-HP takeover: %s %.0f studs, %d%% HP !!",
+                                                nearest_player.Name,
+                                                nearest_distance,
+                                                math.floor((health_ratio * 100) + 0.5)
+                                            ))
 
-                                        if start_escape_artist(nearest_player, nearest_distance, health_ratio) then
-                                            return
+                                            start_escape_artist(nearest_player, nearest_distance, health_ratio)
                                         end
                                     end
                                 end
                             end
                         end
 
-                        task.wait(0.05)
+                        was_session_active = session_active_now
+                        task.wait(session_active_now and 0.05 or 0.25)
                     end
 
-                    if trinket_bot.escape_artist_monitor_token == token then
-                        trinket_bot.escape_artist_monitor_token = nil
+                    if moderator_connection then
+                        pcall(function() moderator_connection:Disconnect() end)
                     end
+                    trinket_bot.escape_artist_session_monitor_started = false
                 end)
             end
+
+            -- Start the persistent watcher once. It remains dormant until botstarted=true.
+            start_escape_artist_monitor()
 
             local function handle_moderator_detection(moderator_player)
                 if not moderator_player then return end
@@ -21422,10 +21468,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 if not test_mode then
                     mem:SetItem("botstarted", "true")
-
-                    if start_escape_artist_monitor then
-                        start_escape_artist_monitor()
-                    end
 
                     if not mem:HasItem("serverhop_count") then
                         mem:SetItem("serverhop_count", "0")
@@ -25903,7 +25945,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         trinket_bot.gate_in_progress = false
                         mem:RemoveItem("botstarted")
                         mem:RemoveItem("serverhop_count")
-                        trinket_bot.escape_artist_monitor_token = nil
 
                         kick_after_path = false
                         kick_debounce = false
