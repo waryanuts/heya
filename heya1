@@ -18872,61 +18872,269 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return success and result or nil
             end
 
-            -- Independent trinket-bot lives safety watchdog. Kept entirely inside its
-            -- own spawned closure so it does not consume additional locals/registers in
-            -- this already-large outer function. This is separate from the death guard.
+            -- Session-level trinket-bot death safety. This intentionally lives OUTSIDE
+            -- ExecutePath, so a path error/return/cleanup cannot silently remove death
+            -- protection while mem.botstarted still says the bot session is active.
+            --
+            -- Signals:
+            --   1) Humanoid.Died
+            --   2) Humanoid.HealthChanged <= 0
+            --   3) polling Health <= 0 (backup if a signal is missed)
+            --   4) CharacterAdded / character replacement (last-resort respawn fallback)
+            --
+            -- The first character observed for a bot session is only ARMED as the baseline;
+            -- it is never treated as a death. Only a later replacement is a respawn trigger.
             task.spawn(function()
-                local lives_safety_triggered = false
-                local LIVES_SAFETY_THRESHOLD = 2
+                local session_active = false
+                local death_handled = false
+                local guarded_character = plr.Character
+                local guarded_humanoid = nil
+                local last_known_position = nil
+                local died_connection = nil
+                local health_connection = nil
+                local root_destroy_connection = nil
+                local character_added_connection = nil
 
-                while not (shared and shared.is_unloading) do
-                    local bot_active = mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true"
+                local function bot_session_active()
+                    return mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true"
+                end
 
-                    if not bot_active then
-                        -- Arm it again for the next bot session.
-                        lives_safety_triggered = false
-                    elseif not lives_safety_triggered then
-                        -- Same server-side value used by the hub's existing Phoenix Down logic.
-                        local lives = tonumber(Get("Lives"))
+                local function disconnect_character_signals()
+                    if died_connection then
+                        pcall(function() died_connection:Disconnect() end)
+                        died_connection = nil
+                    end
+                    if health_connection then
+                        pcall(function() health_connection:Disconnect() end)
+                        health_connection = nil
+                    end
+                    if root_destroy_connection then
+                        pcall(function() root_destroy_connection:Disconnect() end)
+                        root_destroy_connection = nil
+                    end
+                    guarded_humanoid = nil
+                end
 
-                        if lives == LIVES_SAFETY_THRESHOLD then
-                            lives_safety_triggered = true
-                            trinket_bot.path_running = false
-                            trinket_bot.gate_in_progress = false
-                            trinket_bot.escape_artist_active = false
-                            trinket_bot.escape_artist_monitor_token = nil
-
-                            -- Prevent an auto-rejoin from immediately restarting the bot at 2 lives.
-                            mem:RemoveItem("botstarted")
-                            mem:RemoveItem("serverhop_count")
-
-                            local message = string.format(
-                                "TRINKET BOT SAFETY: Lives reached %d - stopping bot and kicking",
-                                lives
-                            )
-
-                            warn("[LIVES SAFETY] " .. message)
+                local function refresh_last_position()
+                    if guarded_character then
+                        local root = FindFirstChild(guarded_character, "HumanoidRootPart")
+                        if root then
                             pcall(function()
-                                library:Notify(string.format("Lives safety triggered (%d lives) - kicking", lives))
-                            end)
-
-                            -- Webhook is asynchronous so it can never hold up the safety kick.
-                            task.spawn(function()
-                                pcall(function()
-                                    utility:plain_webhook(message)
-                                end)
-                            end)
-
-                            task.spawn(function()
-                                task.wait(0.1)
-                                pcall(function()
-                                    plr:Kick(string.format("Trinket bot safety: %d lives", lives))
-                                end)
+                                last_known_position = root.Position
                             end)
                         end
                     end
+                end
 
-                    task.wait(0.75)
+                local function handle_session_death(source)
+                    if death_handled or not session_active or not bot_session_active() then
+                        return
+                    end
+
+                    death_handled = true
+                    refresh_last_position()
+                    disconnect_character_signals()
+
+                    -- Stop movement/gating immediately, but intentionally leave botstarted
+                    -- intact. The death kick can therefore keep the normal persisted bot
+                    -- session behavior unless another safety (such as the 2-lives guard)
+                    -- explicitly clears it.
+                    trinket_bot.path_running = false
+                    trinket_bot.gate_in_progress = false
+
+                    pcall(function()
+                        library:Notify("Path stopped due to death")
+                    end)
+
+                    local nearby_on_death = {}
+                    if last_known_position then
+                        for _, other_player in next, plrs:GetPlayers() do
+                            if other_player ~= plr and other_player.Character then
+                                local other_root = FindFirstChild(other_player.Character, "HumanoidRootPart")
+                                if other_root then
+                                    local distance = (other_root.Position - last_known_position).Magnitude
+                                    if distance <= 500 then
+                                        table.insert(nearby_on_death, string.format(
+                                            "%s (%d studs)",
+                                            other_player.Name,
+                                            math.floor(distance + 0.5)
+                                        ))
+                                    end
+                                end
+                            end
+                        end
+                        table.sort(nearby_on_death)
+                    end
+
+                    local nearby_death_text
+                    if not last_known_position then
+                        nearby_death_text = "Players within 500 studs on death: unable to scan (death position unavailable)"
+                    elseif #nearby_on_death > 0 then
+                        nearby_death_text = "Players within 500 studs on death: " .. table.concat(nearby_on_death, ", ")
+                    else
+                        nearby_death_text = "Players within 500 studs on death: none"
+                    end
+
+                    local full_death_log = string.format(
+                        "bot died [%s]\n%s",
+                        tostring(source or "unknown"),
+                        nearby_death_text
+                    )
+                    warn("[SESSION DEATH GUARD] " .. full_death_log)
+
+                    local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
+                    if stay_in_server then
+                        pcall(function()
+                            library:Notify("You died (stay in server - not kicking)")
+                        end)
+                        task.spawn(function()
+                            pcall(function()
+                                utility:plain_webhook(full_death_log .. "\nStay in server mode - not kicking")
+                            end)
+                        end)
+                    else
+                        pcall(function()
+                            library:Notify("You died - kicking for safety")
+                        end)
+
+                        -- Never block the kick on Discord/network latency.
+                        task.spawn(function()
+                            pcall(function()
+                                utility:plain_webhook(full_death_log .. "\nKicking for safety")
+                            end)
+                        end)
+
+                        task.spawn(function()
+                            task.wait(0.15)
+                            pcall(function()
+                                plr:Kick("bot died")
+                            end)
+                        end)
+                    end
+                end
+
+                local function bind_character(character)
+                    if not character then
+                        return
+                    end
+
+                    disconnect_character_signals()
+                    guarded_character = character
+                    refresh_last_position()
+
+                    -- CharacterAdded can fire before Humanoid exists. Wait in a child task so
+                    -- the persistent session monitor itself never stalls.
+                    task.spawn(function()
+                        local expected_character = character
+                        local humanoid = FindFirstChildOfClass(expected_character, "Humanoid")
+                            or expected_character:WaitForChild("Humanoid", 10)
+
+                        if not humanoid
+                            or death_handled
+                            or not session_active
+                            or not bot_session_active()
+                            or guarded_character ~= expected_character
+                        then
+                            return
+                        end
+
+                        guarded_humanoid = humanoid
+
+                        died_connection = utility:Connection(humanoid.Died, function()
+                            handle_session_death("Humanoid.Died")
+                        end)
+
+                        health_connection = utility:Connection(humanoid.HealthChanged, function(health)
+                            if tonumber(health) and health <= 0 then
+                                handle_session_death("HealthChanged <= 0")
+                            end
+                        end)
+
+                        local root = FindFirstChild(expected_character, "HumanoidRootPart")
+                        if root then
+                            root_destroy_connection = utility:Connection(root.Destroying, function()
+                                pcall(function()
+                                    last_known_position = root.Position
+                                end)
+                            end)
+                        end
+
+                        -- Catch a character that was already dead before the connections were made.
+                        if humanoid.Health <= 0 then
+                            handle_session_death("Bind detected Health <= 0")
+                        end
+                    end)
+                end
+
+                character_added_connection = utility:Connection(plr.CharacterAdded, function(new_character)
+                    if not bot_session_active() then
+                        -- Keep the newest normal character as the future baseline while inactive.
+                        guarded_character = new_character
+                        return
+                    end
+
+                    if not session_active then
+                        session_active = true
+                        death_handled = false
+
+                        -- If we already had a different character immediately before botstarted
+                        -- became active, this is a replacement, not the initial baseline. This
+                        -- closes the tiny race between mem:SetItem("botstarted") and the poll loop.
+                        if guarded_character and new_character ~= guarded_character then
+                            handle_session_death("CharacterAdded respawn fallback")
+                            return
+                        end
+
+                        bind_character(new_character)
+                        return
+                    end
+
+                    if not guarded_character then
+                        bind_character(new_character)
+                    elseif new_character ~= guarded_character and not death_handled then
+                        handle_session_death("CharacterAdded respawn fallback")
+                    end
+                end)
+
+                while shared and not shared.is_unloading do
+                    local active_now = bot_session_active()
+
+                    if active_now and not session_active then
+                        session_active = true
+                        death_handled = false
+                        guarded_character = plr.Character or guarded_character
+                        if guarded_character then
+                            bind_character(guarded_character)
+                        end
+                    elseif not active_now and session_active then
+                        session_active = false
+                        death_handled = false
+                        disconnect_character_signals()
+                        guarded_character = plr.Character
+                        last_known_position = nil
+                    elseif not active_now then
+                        -- Track the normal character while the bot is off. This prevents the
+                        -- first spawn before bot start from ever being mistaken for a respawn.
+                        guarded_character = plr.Character or guarded_character
+                    elseif session_active and not death_handled then
+                        if not guarded_character and plr.Character then
+                            bind_character(plr.Character)
+                        elseif guarded_character and plr.Character and plr.Character ~= guarded_character then
+                            handle_session_death("Character replacement polling fallback")
+                        else
+                            refresh_last_position()
+                            if guarded_humanoid and guarded_humanoid.Health <= 0 then
+                                handle_session_death("Polling Health <= 0")
+                            end
+                        end
+                    end
+
+                    task.wait(0.1)
+                end
+
+                disconnect_character_signals()
+                if character_added_connection then
+                    pcall(function() character_added_connection:Disconnect() end)
                 end
             end)
 
@@ -21101,11 +21309,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 local trinket_added_connection
                 local proximity_connection
                 local mod_connection
-                local death_connection
-                local death_health_connection
-                local death_respawn_connection
-                local death_root_destroy_connection
-                local death_guard_handled = false
                 local illu_connections = trinket_bot.illu_connections
                 local position_lock_connection
                 local temp_connection
@@ -21117,31 +21320,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 local function track_connection(name, conn)
                     trinket_bot.connections[name] = conn
                     return conn
-                end
-
-                local function disconnect_death_guard_connections()
-                    local guard_connections = {
-                        {name = "death", conn = death_connection},
-                        {name = "death_health", conn = death_health_connection},
-                        {name = "death_respawn", conn = death_respawn_connection},
-                        {name = "death_root_destroy", conn = death_root_destroy_connection},
-                    }
-
-                    for _, entry in ipairs(guard_connections) do
-                        local conn = entry.conn
-                        if conn then
-                            pcall(function() conn:Disconnect() end)
-                        end
-
-                        if trinket_bot.connections and trinket_bot.connections[entry.name] == conn then
-                            trinket_bot.connections[entry.name] = nil
-                        end
-                    end
-
-                    death_connection = nil
-                    death_health_connection = nil
-                    death_respawn_connection = nil
-                    death_root_destroy_connection = nil
                 end
 
                 if cheat_client and cheat_client.config and not cheat_client.config.blatant_mode and serverhop_count < 1 then
@@ -21265,141 +21443,21 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
 
+                -- Character movement state setup only. Death protection is intentionally
+                -- session-level now, so it survives ExecutePath stopping/unwinding.
                 local character = plr.Character
                 if character then
                     local humanoid = FindFirstChildOfClass(character, "Humanoid")
                     if humanoid then
                         humanoid:SetStateEnabled(5, false)
                         humanoid:ChangeState(3)
-
-                        local root_at_setup = FindFirstChild(character, "HumanoidRootPart")
-                        local last_known_death_position = root_at_setup and root_at_setup.Position or nil
-
-                        -- One-shot death safety handler. Do not rely on Humanoid.Died alone:
-                        -- Rogue/Roblox can replace the Character quickly enough that the old
-                        -- Died callback is missed. HealthChanged and CharacterAdded are backup
-                        -- signals so a respawn during an active bot session is always treated
-                        -- as a death and cannot silently continue the bot.
-                        local function handle_trinket_bot_death(source)
-                            if death_guard_handled then
-                                return
-                            end
-                            death_guard_handled = true
-
-                            trinket_bot.path_running = false
-                            pcall(function() library:Notify("Path stopped due to death") end)
-
-                            local death_root = FindFirstChild(character, "HumanoidRootPart")
-                            if death_root then
-                                last_known_death_position = death_root.Position
-                            end
-
-                            local nearby_on_death = {}
-                            local death_position = death_root and death_root.Position or last_known_death_position
-
-                            if death_position then
-                                for _, other_player in next, plrs:GetPlayers() do
-                                    if other_player ~= plr and other_player.Character then
-                                        local other_root = FindFirstChild(other_player.Character, "HumanoidRootPart")
-                                        if other_root then
-                                            local distance = (other_root.Position - death_position).Magnitude
-                                            if distance <= 500 then
-                                                table.insert(nearby_on_death, string.format("%s (%d studs)", other_player.Name, math.floor(distance + 0.5)))
-                                            end
-                                        end
-                                    end
-                                end
-
-                                table.sort(nearby_on_death)
-                            end
-
-                            local nearby_death_text
-                            if not death_position then
-                                nearby_death_text = "Players within 500 studs on death: unable to scan (death position unavailable)"
-                            elseif #nearby_on_death > 0 then
-                                nearby_death_text = "Players within 500 studs on death: " .. table.concat(nearby_on_death, ", ")
-                            else
-                                nearby_death_text = "Players within 500 studs on death: none"
-                            end
-
-                            local source_text = tostring(source or "unknown")
-                            local full_death_log = string.format("bot died [%s]\n%s", source_text, nearby_death_text)
-                            warn("[DEATH LOG] " .. full_death_log)
-
-                            -- Disconnect every guard now that one of them won the race.
-                            disconnect_death_guard_connections()
-
-                            local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
-                            if test_mode then
-                                pcall(function() library:Notify("You died (test mode - not kicking)") end)
-                            elseif stay_in_server then
-                                pcall(function() library:Notify("You died (stay in server - not kicking)") end)
-                                task.spawn(function()
-                                    pcall(function()
-                                        utility:plain_webhook(full_death_log .. "\nStay in server mode - not kicking")
-                                    end)
-                                end)
-                            else
-                                pcall(function() library:Notify("You died - kicking for safety") end)
-
-                                -- Webhook and kick run independently. A slow/failed webhook must
-                                -- never delay the safety kick long enough for the respawned
-                                -- character to be attacked again.
-                                task.spawn(function()
-                                    pcall(function()
-                                        utility:plain_webhook(full_death_log .. "\nKicking for safety")
-                                    end)
-                                end)
-
-                                task.spawn(function()
-                                    task.wait(0.15)
-                                    pcall(function() plr:Kick("bot died") end)
-                                end)
-                            end
-                        end
-
-                        death_connection = track_connection("death", utility:Connection(humanoid.Died, function()
-                            handle_trinket_bot_death("Humanoid.Died")
-                        end))
-
-                        death_health_connection = track_connection("death_health", utility:Connection(humanoid.HealthChanged, function(health)
-                            if tonumber(health) and health <= 0 then
-                                handle_trinket_bot_death("HealthChanged <= 0")
-                            end
-                        end))
-
-                        -- Preserve the final old-character position if its root is destroyed
-                        -- before the fallback respawn signal fires.
-                        if root_at_setup then
-                            death_root_destroy_connection = track_connection("death_root_destroy", utility:Connection(root_at_setup.Destroying, function()
-                                pcall(function()
-                                    last_known_death_position = root_at_setup.Position
-                                end)
-                            end))
-                        end
-
-                        -- Last-resort race fix: if a NEW character appears while this ExecutePath
-                        -- session is still alive and we never handled a death signal, then the
-                        -- old character was replaced/respawned. Treat that as death immediately.
-                        death_respawn_connection = track_connection("death_respawn", utility:Connection(plr.CharacterAdded, function(new_character)
-                            if death_guard_handled or new_character == character then
-                                return
-                            end
-
-                            local bot_session_active = trinket_bot.path_running
-                                or (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true")
-
-                            if bot_session_active then
-                                handle_trinket_bot_death("CharacterAdded respawn fallback")
-                            end
-                        end))
                     else
                         trinket_bot.path_running = false
                         if not test_mode and mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true" then
                             utility:plain_webhook("CRITICAL: Humanoid not found in ExecutePath - kicking for safety")
                             library:Notify("CRITICAL: Humanoid not found - kicking")
                             task.wait(0.5)
-                            plr:Kick("Humanoid not found - cannot set up death protection")
+                            plr:Kick("Humanoid not found - cannot run trinket path")
                         end
                         return
                     end
@@ -21409,7 +21467,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         utility:plain_webhook("CRITICAL: Character not found in ExecutePath - kicking for safety")
                         library:Notify("CRITICAL: Character not found - kicking")
                         task.wait(0.5)
-                        plr:Kick("Character not found - cannot set up death protection")
+                        plr:Kick("Character not found - cannot run trinket path")
                     end
                     return
                 end
@@ -24015,7 +24073,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if glassmask_thrown_connection then
                     pcall(function() glassmask_thrown_connection:Disconnect() end)
                 end
-                disconnect_death_guard_connections()
                 for _, conn in ipairs(illu_connections) do
                     if conn then
                         pcall(function() conn:Disconnect() end)
@@ -25735,7 +25792,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             phoenix_flower_kick_amount = Options.PhoenixFlowerKickAmount and Options.PhoenixFlowerKickAmount.Value or 1,
                             kick_on_aoe_ctags = Toggles.KickOnAOECTags and Toggles.KickOnAOECTags.Value or false,
                             escape_artists = Toggles.EscapeArtists and Toggles.EscapeArtists.Value or false,
-                            stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false,
+                                    stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false,
                             reequip_gate_in_loop = Toggles.ReequipGateInLoop == nil and true or Toggles.ReequipGateInLoop.Value,
                             hold_pebble_in_loop = Toggles.HoldPebbleInLoop and Toggles.HoldPebbleInLoop.Value or false,
                             auto_pop_idol_of_war = Toggles.AutoPopIdolOfWar and Toggles.AutoPopIdolOfWar.Value or false,
