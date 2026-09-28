@@ -18872,6 +18872,64 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return success and result or nil
             end
 
+            -- Independent trinket-bot lives safety watchdog. Kept entirely inside its
+            -- own spawned closure so it does not consume additional locals/registers in
+            -- this already-large outer function. This is separate from the death guard.
+            task.spawn(function()
+                local lives_safety_triggered = false
+                local LIVES_SAFETY_THRESHOLD = 2
+
+                while not (shared and shared.is_unloading) do
+                    local bot_active = mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true"
+
+                    if not bot_active then
+                        -- Arm it again for the next bot session.
+                        lives_safety_triggered = false
+                    elseif not lives_safety_triggered then
+                        -- Same server-side value used by the hub's existing Phoenix Down logic.
+                        local lives = tonumber(Get("Lives"))
+
+                        if lives == LIVES_SAFETY_THRESHOLD then
+                            lives_safety_triggered = true
+                            trinket_bot.path_running = false
+                            trinket_bot.gate_in_progress = false
+                            trinket_bot.escape_artist_active = false
+                            trinket_bot.escape_artist_monitor_token = nil
+
+                            -- Prevent an auto-rejoin from immediately restarting the bot at 2 lives.
+                            mem:RemoveItem("botstarted")
+                            mem:RemoveItem("serverhop_count")
+
+                            local message = string.format(
+                                "TRINKET BOT SAFETY: Lives reached %d - stopping bot and kicking",
+                                lives
+                            )
+
+                            warn("[LIVES SAFETY] " .. message)
+                            pcall(function()
+                                library:Notify(string.format("Lives safety triggered (%d lives) - kicking", lives))
+                            end)
+
+                            -- Webhook is asynchronous so it can never hold up the safety kick.
+                            task.spawn(function()
+                                pcall(function()
+                                    utility:plain_webhook(message)
+                                end)
+                            end)
+
+                            task.spawn(function()
+                                task.wait(0.1)
+                                pcall(function()
+                                    plr:Kick(string.format("Trinket bot safety: %d lives", lives))
+                                end)
+                            end)
+                        end
+                    end
+
+                    task.wait(0.75)
+                end
+            end)
+
             local function blockInputs()
                 INPUT_BLOCKED = true
                 cas:BindAction(
@@ -21044,6 +21102,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 local proximity_connection
                 local mod_connection
                 local death_connection
+                local death_health_connection
+                local death_respawn_connection
+                local death_root_destroy_connection
+                local death_guard_handled = false
                 local illu_connections = trinket_bot.illu_connections
                 local position_lock_connection
                 local temp_connection
@@ -21055,6 +21117,31 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 local function track_connection(name, conn)
                     trinket_bot.connections[name] = conn
                     return conn
+                end
+
+                local function disconnect_death_guard_connections()
+                    local guard_connections = {
+                        {name = "death", conn = death_connection},
+                        {name = "death_health", conn = death_health_connection},
+                        {name = "death_respawn", conn = death_respawn_connection},
+                        {name = "death_root_destroy", conn = death_root_destroy_connection},
+                    }
+
+                    for _, entry in ipairs(guard_connections) do
+                        local conn = entry.conn
+                        if conn then
+                            pcall(function() conn:Disconnect() end)
+                        end
+
+                        if trinket_bot.connections and trinket_bot.connections[entry.name] == conn then
+                            trinket_bot.connections[entry.name] = nil
+                        end
+                    end
+
+                    death_connection = nil
+                    death_health_connection = nil
+                    death_respawn_connection = nil
+                    death_root_destroy_connection = nil
                 end
 
                 if cheat_client and cheat_client.config and not cheat_client.config.blatant_mode and serverhop_count < 1 then
@@ -21185,20 +21272,32 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         humanoid:SetStateEnabled(5, false)
                         humanoid:ChangeState(3)
 
-                        death_connection = track_connection("death", utility:Connection(humanoid.Died, function()
-                            if death_connection then
-                                pcall(function() death_connection:Disconnect() end)
+                        local root_at_setup = FindFirstChild(character, "HumanoidRootPart")
+                        local last_known_death_position = root_at_setup and root_at_setup.Position or nil
+
+                        -- One-shot death safety handler. Do not rely on Humanoid.Died alone:
+                        -- Rogue/Roblox can replace the Character quickly enough that the old
+                        -- Died callback is missed. HealthChanged and CharacterAdded are backup
+                        -- signals so a respawn during an active bot session is always treated
+                        -- as a death and cannot silently continue the bot.
+                        local function handle_trinket_bot_death(source)
+                            if death_guard_handled then
+                                return
                             end
+                            death_guard_handled = true
 
                             trinket_bot.path_running = false
                             pcall(function() library:Notify("Path stopped due to death") end)
 
-                            local nearby_on_death = {}
                             local death_root = FindFirstChild(character, "HumanoidRootPart")
-
                             if death_root then
-                                local death_position = death_root.Position
+                                last_known_death_position = death_root.Position
+                            end
 
+                            local nearby_on_death = {}
+                            local death_position = death_root and death_root.Position or last_known_death_position
+
+                            if death_position then
                                 for _, other_player in next, plrs:GetPlayers() do
                                     if other_player ~= plr and other_player.Character then
                                         local other_root = FindFirstChild(other_player.Character, "HumanoidRootPart")
@@ -21215,32 +21314,83 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             end
 
                             local nearby_death_text
-                            if not death_root then
-                                nearby_death_text = "Players within 500 studs on death: unable to scan (bot HumanoidRootPart missing)"
+                            if not death_position then
+                                nearby_death_text = "Players within 500 studs on death: unable to scan (death position unavailable)"
                             elseif #nearby_on_death > 0 then
                                 nearby_death_text = "Players within 500 studs on death: " .. table.concat(nearby_on_death, ", ")
                             else
                                 nearby_death_text = "Players within 500 studs on death: none"
                             end
 
-                            warn("[DEATH LOG] " .. nearby_death_text)
+                            local source_text = tostring(source or "unknown")
+                            local full_death_log = string.format("bot died [%s]\n%s", source_text, nearby_death_text)
+                            warn("[DEATH LOG] " .. full_death_log)
+
+                            -- Disconnect every guard now that one of them won the race.
+                            disconnect_death_guard_connections()
 
                             local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
                             if test_mode then
                                 pcall(function() library:Notify("You died (test mode - not kicking)") end)
                             elseif stay_in_server then
                                 pcall(function() library:Notify("You died (stay in server - not kicking)") end)
-                                pcall(function()
-                                    utility:plain_webhook("bot died (stay in server mode)\n" .. nearby_death_text)
-                                end)
-                            else
                                 task.spawn(function()
                                     pcall(function()
-                                        utility:plain_webhook("bot died - kicking\n" .. nearby_death_text)
+                                        utility:plain_webhook(full_death_log .. "\nStay in server mode - not kicking")
                                     end)
-                                    task.wait(0.3)
-                                    plr:Kick("bot died")
                                 end)
+                            else
+                                pcall(function() library:Notify("You died - kicking for safety") end)
+
+                                -- Webhook and kick run independently. A slow/failed webhook must
+                                -- never delay the safety kick long enough for the respawned
+                                -- character to be attacked again.
+                                task.spawn(function()
+                                    pcall(function()
+                                        utility:plain_webhook(full_death_log .. "\nKicking for safety")
+                                    end)
+                                end)
+
+                                task.spawn(function()
+                                    task.wait(0.15)
+                                    pcall(function() plr:Kick("bot died") end)
+                                end)
+                            end
+                        end
+
+                        death_connection = track_connection("death", utility:Connection(humanoid.Died, function()
+                            handle_trinket_bot_death("Humanoid.Died")
+                        end))
+
+                        death_health_connection = track_connection("death_health", utility:Connection(humanoid.HealthChanged, function(health)
+                            if tonumber(health) and health <= 0 then
+                                handle_trinket_bot_death("HealthChanged <= 0")
+                            end
+                        end))
+
+                        -- Preserve the final old-character position if its root is destroyed
+                        -- before the fallback respawn signal fires.
+                        if root_at_setup then
+                            death_root_destroy_connection = track_connection("death_root_destroy", utility:Connection(root_at_setup.Destroying, function()
+                                pcall(function()
+                                    last_known_death_position = root_at_setup.Position
+                                end)
+                            end))
+                        end
+
+                        -- Last-resort race fix: if a NEW character appears while this ExecutePath
+                        -- session is still alive and we never handled a death signal, then the
+                        -- old character was replaced/respawned. Treat that as death immediately.
+                        death_respawn_connection = track_connection("death_respawn", utility:Connection(plr.CharacterAdded, function(new_character)
+                            if death_guard_handled or new_character == character then
+                                return
+                            end
+
+                            local bot_session_active = trinket_bot.path_running
+                                or (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true")
+
+                            if bot_session_active then
+                                handle_trinket_bot_death("CharacterAdded respawn fallback")
                             end
                         end))
                     else
@@ -23865,9 +24015,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if glassmask_thrown_connection then
                     pcall(function() glassmask_thrown_connection:Disconnect() end)
                 end
-                if death_connection then
-                    pcall(function() death_connection:Disconnect() end)
-                end
+                disconnect_death_guard_connections()
                 for _, conn in ipairs(illu_connections) do
                     if conn then
                         pcall(function() conn:Disconnect() end)
