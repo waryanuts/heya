@@ -12932,6 +12932,46 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             group_exploits:AddDivider()
 
+            -- Uber Sigil Quest
+            -- One-click touch for the LookIntoMirror quest object. The object is found
+            -- recursively so this does not depend on workspace:GetChildren() ordering.
+            group_exploits:AddButton({
+                Text = "Uber Sigil Quest",
+                Func = function()
+                    local character = plr.Character
+                    local rootPart = character and FindFirstChild(character, "HumanoidRootPart")
+                    if not rootPart then
+                        library:Notify("Uber Sigil Quest: character is not ready")
+                        return
+                    end
+
+                    local mirror = ws:FindFirstChild("LookIntoMirror", true)
+                    if not mirror then
+                        library:Notify("Uber Sigil Quest: LookIntoMirror not found")
+                        return
+                    end
+
+                    local touchPart
+                    if mirror:IsA("BasePart") then
+                        touchPart = mirror
+                    elseif mirror.Parent and mirror.Parent:IsA("BasePart") then
+                        touchPart = mirror.Parent
+                    else
+                        touchPart = mirror:FindFirstChildWhichIsA("BasePart", true)
+                    end
+
+                    if not touchPart then
+                        library:Notify("Uber Sigil Quest: no touchable part found")
+                        return
+                    end
+
+                    firetouchinterest(touchPart, rootPart, 0)
+                    firetouchinterest(touchPart, rootPart, 1)
+                end
+            })
+
+            group_exploits:AddDivider()
+
             -- Pop Phoenix Flowers
             -- Rapidly equips and activates every Phoenix Flower currently in the
             -- character/backpack. Once none remain, the toggle disables itself.
