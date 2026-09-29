@@ -13,7 +13,7 @@ getgenv().hydroxide_raw = "%s"
 local s,code=pcall(function() return game:HttpGet("%s?nonce="..tostring(math.random()), true) end)
 if not s then
     print("[QUEUE ERROR] HttpGet failed:",code)
-    return
+    returna
 end
 local fn,compileErr=loadstring(code) if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) print("[QUEUE DEBUG] Response preview:",tostring(code):sub(1,200)) return end local ok,runErr=pcall(fn) if not ok then print("[QUEUE ERROR] Runtime failed:",runErr) print("[QUEUE DEBUG] Traceback:",debug.traceback()) end
 ]], DEFAULT_RAW, CUSTOM_SCRIPT_URL)
@@ -3605,32 +3605,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                     if not teleport_failed then
                         print("[TELEPORT] Teleport appears successful, waiting for transition...")
-
-                        -- Teleport transition watchdog: TeleportInitFailed did not fire, but the
-                        -- client can still get stuck in the current server forever. Capture the
-                        -- server we were in when the success line printed. If this exact client
-                        -- is still in the same JobId three minutes later, treat the transition as
-                        -- wedged and kick instead of leaving the bot exposed indefinitely.
-                        local transition_job_id = game.JobId
-                        task.delay(180, function()
-                            if game.JobId ~= transition_job_id then
-                                return
-                            end
-
-                            warn("[TELEPORT WATCHDOG] Still in the same server 3 minutes after transition wait began - kicking")
-
-                            if mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true" then
-                                task.spawn(function()
-                                    pcall(function()
-                                        utility:plain_webhook("CRITICAL: Teleport transition stuck for 3 minutes after success print - kicking")
-                                    end)
-                                end)
-                            end
-
-                            pcall(function()
-                                plr:Kick("Teleport transition stuck for 3 minutes")
-                            end)
-                        end)
 
                         task.wait(5)
                         return true
@@ -12965,8 +12939,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         return
                     end
 
-                    firetouchinterest(touchPart, rootPart, 0)
-                    firetouchinterest(touchPart, rootPart, 1)
+                    pcall(function()
+                        firetouchinterest(touchPart, rootPart, 0)
+                        firetouchinterest(touchPart, rootPart, 1)
+                    end)
                 end
             })
 
@@ -20744,9 +20720,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             -- Escape Artists (Khei only)
-            -- NO Danger/combat-tag dependency. Two trigger priorities:
-            --   1) HP <80% + player <=100 studs = IMMEDIATE takeover.
-            --   2) Player <=50 studs = LAST RESORT only after normal serverhop
+            -- NO Danger/combat-tag dependency. Three trigger priorities:
+            --   1) HP <25% = IMMEDIATE takeover anywhere, no nearby player required.
+            --   2) HP <80% + player <=100 studs = IMMEDIATE takeover.
+            --   3) Player <=50 studs = LAST RESORT only after normal serverhop
             --      attempts are exhausted.
             -- Movement is fixed at 150 studs/sec. Normalize vertically to a random Y from 25-100 first
             -- (climb OR descend), then travel toward a random horizontal point 10,000
@@ -20762,6 +20739,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local ESCAPE_ARTIST_NEAR_RANGE = 50
             local ESCAPE_ARTIST_LOW_HP_RANGE = 100
             local ESCAPE_ARTIST_LOW_HP_THRESHOLD = 0.80
+            local ESCAPE_ARTIST_CRITICAL_HP_THRESHOLD = 0.25
             local ESCAPE_ARTIST_KICK_AFTER = 65
             local ESCAPE_ARTIST_KICK_CLEAR_RADIUS = 500
             local ESCAPE_ARTIST_MIN_Y = 25
@@ -20797,90 +20775,16 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             end
 
-            -- Escape Artists performance/safety helpers.
-            -- Build the BasePart list once for an escape and keep it updated instead of
-            -- allocating character:GetDescendants() every Heartbeat. This preserves the
-            -- same noclip/zero-velocity behavior without rescanning the full character.
-            trinket_bot.escape_artist_create_part_cache = function(character)
-                local cache = {
-                    parts = {},
-                    lookup = setmetatable({}, {__mode = "k"}),
-                    original_can_collide = setmetatable({}, {__mode = "k"}),
-                    descendant_added = nil,
-                }
-
-                local function add_part(object)
-                    if not object or not object:IsA("BasePart") or cache.lookup[object] then
-                        return
-                    end
-
-                    cache.lookup[object] = true
-                    cache.original_can_collide[object] = object.CanCollide
-                    cache.parts[#cache.parts + 1] = object
-
-                    -- New parts should immediately inherit the active escape state.
-                    object.CanCollide = false
-                    object.Velocity = Vector3.zero
-                    object.AssemblyLinearVelocity = Vector3.zero
-                    object.AssemblyAngularVelocity = Vector3.zero
-                end
-
-                for _, object in ipairs(character:GetDescendants()) do
-                    add_part(object)
-                end
-
-                cache.descendant_added = character.DescendantAdded:Connect(function(object)
-                    local ok, err = pcall(add_part, object)
-                    if not ok then
-                        warn("[Escape Artists] DescendantAdded cache error:", err)
-                    end
-                end)
-
-                return cache
-            end
-
-            local function escape_artist_noclip(character, cache)
+            local function escape_artist_noclip(character)
                 if not character then return end
-
-                local parts = cache and cache.parts
-                if not parts then
-                    -- Defensive fallback; normal Escape Artists always supplies a cache.
-                    parts = character:GetDescendants()
-                end
-
-                for _, object in ipairs(parts) do
-                    if object
-                        and object.Parent
-                        and object:IsA("BasePart")
-                        and object:IsDescendantOf(character)
-                    then
-                        -- Avoid expensive property writes when the desired value is already set.
-                        if object.CanCollide then
-                            object.CanCollide = false
-                        end
-                        if object.Velocity.Magnitude > 0.001 then
-                            object.Velocity = Vector3.zero
-                        end
-                        if object.AssemblyLinearVelocity.Magnitude > 0.001 then
-                            object.AssemblyLinearVelocity = Vector3.zero
-                        end
-                        if object.AssemblyAngularVelocity.Magnitude > 0.001 then
-                            object.AssemblyAngularVelocity = Vector3.zero
-                        end
+                for _, object in ipairs(character:GetDescendants()) do
+                    if object:IsA("BasePart") then
+                        object.CanCollide = false
+                        object.Velocity = Vector3.zero
+                        object.AssemblyLinearVelocity = Vector3.zero
+                        object.AssemblyAngularVelocity = Vector3.zero
                     end
                 end
-            end
-
-            trinket_bot.escape_artist_send_webhook_async = function(message)
-                if not utility then return end
-                task.spawn(function()
-                    local ok, err = pcall(function()
-                        utility:plain_webhook(message)
-                    end)
-                    if not ok then
-                        warn("[Escape Artists] Webhook error:", err)
-                    end
-                end)
             end
 
             local function escape_artist_moderator_kick(moderator_player)
@@ -20891,15 +20795,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 local mod_name = moderator_player.Name
                 trinket_bot.moderator_detected = true
                 trinket_bot.path_running = false
-                trinket_bot.escape_artist_active = false
                 cancel_trinket_motion_for_escape()
 
                 library:Notify(string.format("!! Escape Artists: moderator %s joined - kicking immediately !!", mod_name))
-                trinket_bot.escape_artist_send_webhook_async(string.format("Escape Artists: moderator %s joined - kicking immediately", mod_name))
+                if utility then
+                    utility:plain_webhook(string.format("Escape Artists: moderator %s joined - kicking immediately", mod_name))
+                end
 
-                pcall(function()
-                    plr:Kick(string.format("Moderator %s joined", mod_name))
-                end)
+                plr:Kick(string.format("Moderator %s joined", mod_name))
                 return true
             end
 
@@ -20924,81 +20827,34 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 offset_mobs_gate_paused = true
                 stop_offset_mobs()
 
-                local escaped_player_name = trigger_player and trigger_player.Name or "Unknown"
+                local escaped_player_name = trigger_player and trigger_player.Name or "Low HP emergency"
                 local hp_percent = math.floor((math.clamp(health_ratio or 0, 0, 1) * 100) + 0.5)
-                library:Notify(string.format(
-                    "!! Escape Artists triggered by %s (%.0f studs, %d%% HP) !!",
-                    escaped_player_name,
-                    tonumber(trigger_distance) or 0,
-                    hp_percent
-                ))
+                if trigger_player then
+                    library:Notify(string.format(
+                        "!! Escape Artists triggered by %s (%.0f studs, %d%% HP) !!",
+                        escaped_player_name,
+                        tonumber(trigger_distance) or 0,
+                        hp_percent
+                    ))
+                else
+                    library:Notify(string.format(
+                        "!! Escape Artists critical-HP takeover (%d%% HP) !!",
+                        hp_percent
+                    ))
+                end
 
                 task.spawn(function()
                     local escape_character = character
                     local escape_root = root
                     local escape_humanoid = humanoid
                     local escape_mod_connection
-                    local escape_part_cache
                     local finished = false
-                    local cleaned_up = false
 
                     local function disconnect_escape_mod_watch()
                         if escape_mod_connection then
                             pcall(function() escape_mod_connection:Disconnect() end)
                             escape_mod_connection = nil
                         end
-                    end
-
-                    local function cleanup_escape_state()
-                        if cleaned_up then return end
-                        cleaned_up = true
-                        finished = true
-
-                        disconnect_escape_mod_watch()
-
-                        if escape_part_cache and escape_part_cache.descendant_added then
-                            pcall(function()
-                                escape_part_cache.descendant_added:Disconnect()
-                            end)
-                            escape_part_cache.descendant_added = nil
-                        end
-
-                        -- Restore the exact collision values that existed when each part was
-                        -- first seen by this escape, then restore the Humanoid state used by
-                        -- the normal bot. This runs on normal completion AND on any error.
-                        if escape_part_cache and escape_part_cache.original_can_collide then
-                            for part, original_can_collide in pairs(escape_part_cache.original_can_collide) do
-                                if part and part.Parent and part:IsA("BasePart") then
-                                    pcall(function()
-                                        part.CanCollide = original_can_collide
-                                    end)
-                                end
-                            end
-                        end
-
-                        pcall(function()
-                            if plr.Character == escape_character
-                                and escape_humanoid
-                                and escape_humanoid.Parent == escape_character
-                            then
-                                escape_humanoid:SetStateEnabled(5, true)
-                                escape_humanoid:ChangeState(5)
-                            end
-                        end)
-
-                        pcall(function()
-                            if plr.Character == escape_character
-                                and escape_root
-                                and escape_root.Parent == escape_character
-                            then
-                                escape_root.Anchored = false
-                                escape_root.AssemblyLinearVelocity = Vector3.zero
-                                escape_root.AssemblyAngularVelocity = Vector3.zero
-                            end
-                        end)
-
-                        trinket_bot.escape_artist_active = false
-                        offset_mobs_gate_paused = false
                     end
 
                     local function escaped_kick()
@@ -21008,227 +20864,199 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                         local message = string.format("Escaped %s", escaped_player_name)
                         library:Notify(message)
-
-                        -- Never let a slow/stalled HTTP request hold up the actual kick.
-                        trinket_bot.escape_artist_send_webhook_async(message)
-
+                        if utility then
+                            utility:plain_webhook(message)
+                        end
                         pcall(function()
                             plr:Kick(message)
                         end)
                     end
 
-                    local function run_escape()
-                        escape_part_cache = trinket_bot.escape_artist_create_part_cache(escape_character)
+                    -- Escape Artists no longer waits for Danger/combat to clear.
+                    -- After 65 seconds, arm the kick. It may only complete once every
+                    -- other spawned player is farther than 500 studs away. If anyone
+                    -- remains within 500 studs, the escape movement keeps running.
+                    task.delay(ESCAPE_ARTIST_KICK_AFTER, function()
+                        task.spawn(function()
+                            while not finished and trinket_bot.escape_artist_active do
+                                local current_character = plr.Character
+                                local current_root = current_character and FindFirstChild(current_character, "HumanoidRootPart")
+                                if not current_root then
+                                    task.wait(0.1)
+                                    continue
+                                end
 
-                        -- Escape Artists no longer waits for Danger/combat to clear.
-                        -- After 65 seconds, arm the kick. It may only complete once every
-                        -- other spawned player is farther than 500 studs away. If anyone
-                        -- remains within 500 studs, the escape movement keeps running.
-                        task.delay(ESCAPE_ARTIST_KICK_AFTER, function()
-                            local ok, err = xpcall(function()
-                                while not finished and trinket_bot.escape_artist_active do
-                                    local current_character = plr.Character
-                                    local current_root = current_character and FindFirstChild(current_character, "HumanoidRootPart")
-                                    if not current_root then
-                                        task.wait(0.1)
-                                        continue
-                                    end
-
-                                    local player_within_clear_radius = false
-                                    for _, other_player in next, plrs:GetPlayers() do
-                                        if other_player ~= plr and other_player.Character then
-                                            local other_root = FindFirstChild(other_player.Character, "HumanoidRootPart")
-                                            if other_root then
-                                                local distance = (other_root.Position - current_root.Position).Magnitude
-                                                if distance <= ESCAPE_ARTIST_KICK_CLEAR_RADIUS then
-                                                    player_within_clear_radius = true
-                                                    break
-                                                end
+                                local player_within_clear_radius = false
+                                for _, other_player in next, plrs:GetPlayers() do
+                                    if other_player ~= plr and other_player.Character then
+                                        local other_root = FindFirstChild(other_player.Character, "HumanoidRootPart")
+                                        if other_root then
+                                            local distance = (other_root.Position - current_root.Position).Magnitude
+                                            if distance <= ESCAPE_ARTIST_KICK_CLEAR_RADIUS then
+                                                player_within_clear_radius = true
+                                                break
                                             end
                                         end
                                     end
-
-                                    if not player_within_clear_radius then
-                                        escaped_kick()
-                                        return
-                                    end
-
-                                    task.wait(0.1)
                                 end
-                            end, function(message)
-                                return debug.traceback(tostring(message), 2)
-                            end)
 
-                            if not ok then
-                                warn("[Escape Artists] Kick-radius watcher error:\n" .. tostring(err))
-                                cleanup_escape_state()
+                                if not player_within_clear_radius then
+                                    escaped_kick()
+                                    return
+                                end
+
+                                task.wait(0.1)
                             end
                         end)
+                    end)
 
-                        -- The normal path moderator connection is cleaned up when the path stops,
-                        -- so keep a dedicated watcher alive for the entire escape flight.
-                        escape_mod_connection = utility:Connection(plrs.PlayerAdded, function(player)
-                            local ok, err = pcall(function()
-                                if is_moderator(player) then
-                                    disconnect_escape_mod_watch()
-                                    escape_artist_moderator_kick(player)
-                                end
-                            end)
-                            if not ok then
-                                warn("[Escape Artists] Moderator watcher error:", err)
-                            end
-                        end)
-
-                        pcall(function()
-                            escape_humanoid:SetStateEnabled(5, false)
-                            escape_humanoid:ChangeState(3)
-                        end)
-
-                        local function character_still_valid()
-                            return not finished
-                                and trinket_bot.escape_artist_active
-                                and plr.Character == escape_character
-                                and escape_root.Parent == escape_character
-                                and escape_humanoid.Parent == escape_character
-                                and escape_humanoid.Health > 0
+                    -- The normal path moderator connection is cleaned up when the path stops,
+                    -- so keep a dedicated watcher alive for the entire escape flight.
+                    escape_mod_connection = utility:Connection(plrs.PlayerAdded, function(player)
+                        if is_moderator(player) then
+                            disconnect_escape_mod_watch()
+                            escape_artist_moderator_kick(player)
                         end
+                    end)
 
-                        -- Preserve the X/Z where Escape Artists began. The fallback return leg
-                        -- later uses this as its anchor, but never returns all the way onto it.
-                        local escape_origin = escape_root.Position
+                    pcall(function()
+                        escape_humanoid:SetStateEnabled(5, false)
+                        escape_humanoid:ChangeState(3)
+                    end)
 
-                        -- Phase 1: normalize vertically to a random Y between 25 and 100 at exactly 150 studs/sec.
-                        -- This works from either side: low positions climb, high positions descend.
-                        local escape_target_y = math.random(ESCAPE_ARTIST_MIN_Y, ESCAPE_ARTIST_MAX_Y)
-                        while character_still_valid() and math.abs(escape_root.Position.Y - escape_target_y) > 0.5 do
-                            local dt = rs.Heartbeat:Wait()
-                            if not character_still_valid() then break end
+                    local function character_still_valid()
+                        return not finished
+                            and plr.Character == escape_character
+                            and escape_root.Parent == escape_character
+                            and escape_humanoid.Parent == escape_character
+                            and escape_humanoid.Health > 0
+                    end
 
-                            escape_artist_noclip(escape_character, escape_part_cache)
-                            local delta_y = escape_target_y - escape_root.Position.Y
-                            local max_step = ESCAPE_ARTIST_SPEED * dt
-                            local step = math.clamp(delta_y, -max_step, max_step)
-                            escape_root.CFrame = escape_root.CFrame + Vector3.new(0, step, 0)
-                        end
+                    -- Preserve the X/Z where Escape Artists began. The fallback return leg
+                    -- later uses this as its anchor, but never returns all the way onto it.
+                    local escape_origin = escape_root.Position
 
+                    -- Phase 1: normalize vertically to a random Y between 25 and 100 at exactly 150 studs/sec.
+                    -- This works from either side: low positions climb, high positions descend.
+                    local escape_target_y = math.random(ESCAPE_ARTIST_MIN_Y, ESCAPE_ARTIST_MAX_Y)
+                    while character_still_valid() and math.abs(escape_root.Position.Y - escape_target_y) > 0.5 do
+                        local dt = rs.Heartbeat:Wait()
+                        if not character_still_valid() then break end
+
+                        escape_artist_noclip(escape_character)
+                        local delta_y = escape_target_y - escape_root.Position.Y
+                        local max_step = ESCAPE_ARTIST_SPEED * dt
+                        local step = math.clamp(delta_y, -max_step, max_step)
+                        escape_root.CFrame = escape_root.CFrame + Vector3.new(0, step, 0)
+                    end
+
+                    if not character_still_valid() then
+                        disconnect_escape_mod_watch()
+                        return
+                    end
+
+                    -- Phase 2: repeatedly run a 10,000-stud zigzag escape leg. If the
+                    -- endpoint is reached before the 65-second kick arm, tween back
+                    -- toward the original X/Z but stop 6,000 studs away from it on the same
+                    -- escape line. The tween preserves the Y that the zigzag leg ended at.
+                    local function choose_far_direction()
+                        local angle = math.random() * math.pi * 2
+                        local forward = Vector3.new(math.cos(angle), 0, math.sin(angle))
+                        local origin_xz = Vector3.new(escape_origin.X, 0, escape_origin.Z)
+                        local destination = origin_xz + (forward * ESCAPE_ARTIST_TRAVEL_DISTANCE)
+                        return forward, Vector3.new(destination.X, escape_root.Position.Y, destination.Z)
+                    end
+
+                    local function tween_return_to_offset(forward)
                         if not character_still_valid() then
-                            return
+                            return false
                         end
 
-                        -- Phase 2: repeatedly run a 10,000-stud zigzag escape leg. If the
-                        -- endpoint is reached before the 65-second kick arm, tween back
-                        -- toward the original X/Z but stop 6,000 studs away from it on the same
-                        -- escape line. The tween preserves the Y that the zigzag leg ended at.
-                        local function choose_far_direction()
-                            local angle = math.random() * math.pi * 2
-                            local forward = Vector3.new(math.cos(angle), 0, math.sin(angle))
-                            local origin_xz = Vector3.new(escape_origin.X, 0, escape_origin.Z)
-                            local destination = origin_xz + (forward * ESCAPE_ARTIST_TRAVEL_DISTANCE)
-                            return forward, Vector3.new(destination.X, escape_root.Position.Y, destination.Z)
+                        local return_y = escape_root.Position.Y
+                        local origin_xz = Vector3.new(escape_origin.X, 0, escape_origin.Z)
+                        local return_xz = origin_xz + (forward * ESCAPE_ARTIST_RETURN_OFFSET)
+                        local return_position = Vector3.new(return_xz.X, return_y, return_xz.Z)
+                        local return_distance = (return_position - escape_root.Position).Magnitude
+
+                        if return_distance <= 1 then
+                            return true
                         end
 
-                        local function tween_return_to_offset(forward)
-                            if not character_still_valid() then
-                                return false
-                            end
+                        local rotation_only = escape_root.CFrame - escape_root.Position
+                        local return_cframe = CFrame.new(return_position) * rotation_only
+                        local duration = return_distance / ESCAPE_ARTIST_SPEED
+                        local return_tween = ts:Create(
+                            escape_root,
+                            TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
+                            {CFrame = return_cframe}
+                        )
 
-                            local return_y = escape_root.Position.Y
-                            local origin_xz = Vector3.new(escape_origin.X, 0, escape_origin.Z)
-                            local return_xz = origin_xz + (forward * ESCAPE_ARTIST_RETURN_OFFSET)
-                            local return_position = Vector3.new(return_xz.X, return_y, return_xz.Z)
-                            local return_distance = (return_position - escape_root.Position).Magnitude
+                        return_tween:Play()
 
-                            if return_distance <= 1 then
-                                return true
-                            end
-
-                            local rotation_only = escape_root.CFrame - escape_root.Position
-                            local return_cframe = CFrame.new(return_position) * rotation_only
-                            local duration = return_distance / ESCAPE_ARTIST_SPEED
-                            local return_tween = ts:Create(
-                                escape_root,
-                                TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
-                                {CFrame = return_cframe}
-                            )
-
-                            return_tween:Play()
-
-                            while character_still_valid() and return_tween.PlaybackState == Enum.PlaybackState.Playing do
-                                escape_artist_noclip(escape_character, escape_part_cache)
-                                rs.Heartbeat:Wait()
-                            end
-
-                            pcall(function() return_tween:Cancel() end)
-                            return character_still_valid()
+                        while character_still_valid() and return_tween.PlaybackState == Enum.PlaybackState.Playing do
+                            escape_artist_noclip(escape_character)
+                            rs.Heartbeat:Wait()
                         end
+
+                        pcall(function() return_tween:Cancel() end)
+                        return character_still_valid()
+                    end
+
+                    while character_still_valid() do
+                        local forward, destination = choose_far_direction()
+                        local started_at = os.clock()
+                        local reached_destination = false
 
                         while character_still_valid() do
-                            local forward, destination = choose_far_direction()
-                            local started_at = os.clock()
-                            local reached_destination = false
-
-                            while character_still_valid() do
-                                local to_destination = destination - escape_root.Position
-                                local horizontal = Vector3.new(to_destination.X, 0, to_destination.Z)
-                                if horizontal.Magnitude <= 25 then
-                                    reached_destination = true
-                                    break
-                                end
-
-                                forward = horizontal.Unit
-                                local right = Vector3.new(-forward.Z, 0, forward.X)
-                                local elapsed = os.clock() - started_at
-                                local lateral_sign = (math.floor(elapsed / 0.45) % 2 == 0) and 1 or -1
-                                local vertical_sign = (math.floor(elapsed / 0.60) % 2 == 0) and 1 or -1
-
-                                if escape_root.Position.Y <= ESCAPE_ARTIST_MIN_Y then
-                                    vertical_sign = 1
-                                elseif escape_root.Position.Y >= ESCAPE_ARTIST_MAX_Y then
-                                    vertical_sign = -1
-                                end
-
-                                local move_direction = forward
-                                    + (right * (0.60 * lateral_sign))
-                                    + Vector3.new(0, 0.40 * vertical_sign, 0)
-
-                                if move_direction.Magnitude > 0 then
-                                    move_direction = move_direction.Unit
-                                else
-                                    move_direction = forward
-                                end
-
-                                local dt = rs.Heartbeat:Wait()
-                                if not character_still_valid() then break end
-
-                                escape_artist_noclip(escape_character, escape_part_cache)
-                                escape_root.CFrame = escape_root.CFrame + (move_direction * (ESCAPE_ARTIST_SPEED * dt))
-                            end
-
-                            if not character_still_valid() then
+                            local to_destination = destination - escape_root.Position
+                            local horizontal = Vector3.new(to_destination.X, 0, to_destination.Z)
+                            if horizontal.Magnitude <= 25 then
+                                reached_destination = true
                                 break
                             end
 
-                            if reached_destination then
-                                library:Notify("Escape Artists: 10,000-stud endpoint reached - tweening back to 6,000-stud offset")
-                                if not tween_return_to_offset(forward) then
-                                    return
-                                end
+                            forward = horizontal.Unit
+                            local right = Vector3.new(-forward.Z, 0, forward.X)
+                            local elapsed = os.clock() - started_at
+                            local lateral_sign = (math.floor(elapsed / 0.45) % 2 == 0) and 1 or -1
+                            local vertical_sign = (math.floor(elapsed / 0.60) % 2 == 0) and 1 or -1
+
+                            if escape_root.Position.Y <= ESCAPE_ARTIST_MIN_Y then
+                                vertical_sign = 1
+                            elseif escape_root.Position.Y >= ESCAPE_ARTIST_MAX_Y then
+                                vertical_sign = -1
+                            end
+
+                            local move_direction = forward
+                                + (right * (0.60 * lateral_sign))
+                                + Vector3.new(0, 0.40 * vertical_sign, 0)
+
+                            if move_direction.Magnitude > 0 then
+                                move_direction = move_direction.Unit
+                            else
+                                move_direction = forward
+                            end
+
+                            local dt = rs.Heartbeat:Wait()
+                            if not character_still_valid() then break end
+
+                            escape_artist_noclip(escape_character)
+                            escape_root.CFrame = escape_root.CFrame + (move_direction * (ESCAPE_ARTIST_SPEED * dt))
+                        end
+
+                        if not character_still_valid() then
+                            break
+                        end
+
+                        if reached_destination then
+                            library:Notify("Escape Artists: 10,000-stud endpoint reached - tweening back to 6,000-stud offset")
+                            if not tween_return_to_offset(forward) then
+                                return
                             end
                         end
                     end
 
-                    -- Protect the entire escape lifecycle. Any unexpected runtime error now
-                    -- falls through the same finalizer instead of leaving the session stuck
-                    -- with escape_artist_active=true / noclip / disabled Humanoid state.
-                    local ok, err = xpcall(run_escape, function(message)
-                        return debug.traceback(tostring(message), 2)
-                    end)
-
-                    if not ok then
-                        warn("[Escape Artists] Runtime error:\n" .. tostring(err))
-                    end
-
-                    cleanup_escape_state()
+                    disconnect_escape_mod_watch()
                 end)
 
                 return true
@@ -21241,8 +21069,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             -- errors, sets path_running=false, or cleans up its own connections.
             --
             -- While mem.botstarted == "true":
-            --   1) HP <80% + another player <=100 studs triggers Escape Artists immediately.
-            --   2) Moderator joins are handled here too, independent of the path's mod watcher.
+            --   1) HP <25% triggers Escape Artists immediately, regardless of nearby players.
+            --   2) HP <80% + another player <=100 studs triggers Escape Artists immediately.
+            --   3) Moderator joins are handled here too, independent of the path's mod watcher.
             --
             -- When botstarted is false the watcher simply sleeps; manual Stop Bot therefore
             -- disarms it without destroying/recreating the session-level monitor.
@@ -21307,7 +21136,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     local max_health = math.max(tonumber(humanoid.MaxHealth) or 0, 1)
                                     local health_ratio = humanoid.Health / max_health
 
-                                    if health_ratio < ESCAPE_ARTIST_LOW_HP_THRESHOLD then
+                                    if health_ratio < ESCAPE_ARTIST_CRITICAL_HP_THRESHOLD then
+                                        start_escape_artist(nil, 0, health_ratio)
+                                    elseif health_ratio < ESCAPE_ARTIST_LOW_HP_THRESHOLD then
                                         local nearest_player = nil
                                         local nearest_distance = math.huge
 
@@ -22384,9 +22215,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     local distance_samples = build_swept_player_samples(bot_root, critical_distance, proximity_check_distance)
 
                     -- Escape Artists LOW-HP takeover has priority over Critical Distance / emergency gating in Khei.
-                    -- Immediate trigger: HP <80% + player <=100 studs. No Danger tag required.
-                    -- The normal <=50 trigger is handled later as a last resort only after
-                    -- serverhop attempts have been exhausted.
+                    -- Immediate triggers: HP <25% anywhere, or HP <80% + player <=100 studs.
+                    -- No Danger tag is required. The normal <=50 trigger is handled later as
+                    -- a last resort only after serverhop attempts have been exhausted.
                     if escape_artists_enabled() and not trinket_bot.escape_artist_active then
                         local character = plr.Character
                         local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
@@ -22394,24 +22225,30 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         if character and humanoid and humanoid.Health > 0 then
                             local max_health = math.max(tonumber(humanoid.MaxHealth) or 0, 1)
                             local health_ratio = humanoid.Health / max_health
-                            local nearest_player = nil
-                            local nearest_distance = math.huge
-
-                            for _, sample in pairs(distance_samples) do
-                                local current_distance = sample.current_distance or math.huge
-                                if current_distance < nearest_distance then
-                                    nearest_distance = current_distance
-                                    nearest_player = sample.player
-                                end
-                            end
-
-                            local should_escape = nearest_player ~= nil
-                                and health_ratio < ESCAPE_ARTIST_LOW_HP_THRESHOLD
-                                and nearest_distance <= ESCAPE_ARTIST_LOW_HP_RANGE
-
-                            if should_escape then
-                                if start_escape_artist(nearest_player, nearest_distance, health_ratio) then
+                            if health_ratio < ESCAPE_ARTIST_CRITICAL_HP_THRESHOLD then
+                                if start_escape_artist(nil, 0, health_ratio) then
                                     return
+                                end
+                            else
+                                local nearest_player = nil
+                                local nearest_distance = math.huge
+
+                                for _, sample in pairs(distance_samples) do
+                                    local current_distance = sample.current_distance or math.huge
+                                    if current_distance < nearest_distance then
+                                        nearest_distance = current_distance
+                                        nearest_player = sample.player
+                                    end
+                                end
+
+                                local should_escape = nearest_player ~= nil
+                                    and health_ratio < ESCAPE_ARTIST_LOW_HP_THRESHOLD
+                                    and nearest_distance <= ESCAPE_ARTIST_LOW_HP_RANGE
+
+                                if should_escape then
+                                    if start_escape_artist(nearest_player, nearest_distance, health_ratio) then
+                                        return
+                                    end
                                 end
                             end
                         end
@@ -24848,7 +24685,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 group_trinket_bot:AddToggle("EscapeArtists", {
                     Text = "Escape Artists",
                     Default = false,
-                    Tooltip = "Khei only: below 80% HP + player within 100 studs takes over immediately. Player within 50 studs is last resort after serverhop attempts fail. Normalizes to a random Y from 25-100 and keeps the zigzag within Y=25-100 at fixed 150 speed. After 65 seconds it only kicks + webhooks once no player is within 500 studs; otherwise it keeps escaping. Moderator joins kick immediately."
+                    Tooltip = "Khei only: below 25% HP takes over immediately anywhere. Below 80% HP + player within 100 studs also takes over immediately. Player within 50 studs is last resort after serverhop attempts fail. Normalizes to a random Y from 25-100 and keeps the zigzag within Y=25-100 at fixed 150 speed. After 65 seconds it only kicks + webhooks once no player is within 500 studs; otherwise it keeps escaping. Moderator joins kick immediately."
                 })
             end
 
