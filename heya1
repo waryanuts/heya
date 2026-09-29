@@ -13,7 +13,7 @@ getgenv().hydroxide_raw = "%s"
 local s,code=pcall(function() return game:HttpGet("%s?nonce="..tostring(math.random()), true) end)
 if not s then
     print("[QUEUE ERROR] HttpGet failed:",code)
-    returna
+    return
 end
 local fn,compileErr=loadstring(code) if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) print("[QUEUE DEBUG] Response preview:",tostring(code):sub(1,200)) return end local ok,runErr=pcall(fn) if not ok then print("[QUEUE ERROR] Runtime failed:",runErr) print("[QUEUE DEBUG] Traceback:",debug.traceback()) end
 ]], DEFAULT_RAW, CUSTOM_SCRIPT_URL)
@@ -20739,7 +20739,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local ESCAPE_ARTIST_NEAR_RANGE = 50
             local ESCAPE_ARTIST_LOW_HP_RANGE = 100
             local ESCAPE_ARTIST_LOW_HP_THRESHOLD = 0.80
-            local ESCAPE_ARTIST_CRITICAL_HP_THRESHOLD = 0.25
             local ESCAPE_ARTIST_KICK_AFTER = 65
             local ESCAPE_ARTIST_KICK_CLEAR_RADIUS = 500
             local ESCAPE_ARTIST_MIN_Y = 25
@@ -21136,7 +21135,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     local max_health = math.max(tonumber(humanoid.MaxHealth) or 0, 1)
                                     local health_ratio = humanoid.Health / max_health
 
-                                    if health_ratio < ESCAPE_ARTIST_CRITICAL_HP_THRESHOLD then
+                                    if health_ratio < 0.25 then
                                         start_escape_artist(nil, 0, health_ratio)
                                     elseif health_ratio < ESCAPE_ARTIST_LOW_HP_THRESHOLD then
                                         local nearest_player = nil
@@ -22225,7 +22224,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         if character and humanoid and humanoid.Health > 0 then
                             local max_health = math.max(tonumber(humanoid.MaxHealth) or 0, 1)
                             local health_ratio = humanoid.Health / max_health
-                            if health_ratio < ESCAPE_ARTIST_CRITICAL_HP_THRESHOLD then
+                            if health_ratio < 0.25 then
                                 if start_escape_artist(nil, 0, health_ratio) then
                                     return
                                 end
