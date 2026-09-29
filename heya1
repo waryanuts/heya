@@ -20801,7 +20801,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             -- Build the BasePart list once for an escape and keep it updated instead of
             -- allocating character:GetDescendants() every Heartbeat. This preserves the
             -- same noclip/zero-velocity behavior without rescanning the full character.
-            local function escape_artist_create_part_cache(character)
+            trinket_bot.escape_artist_create_part_cache = function(character)
                 local cache = {
                     parts = {},
                     lookup = setmetatable({}, {__mode = "k"}),
@@ -20871,7 +20871,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             end
 
-            local function escape_artist_send_webhook_async(message)
+            trinket_bot.escape_artist_send_webhook_async = function(message)
                 if not utility then return end
                 task.spawn(function()
                     local ok, err = pcall(function()
@@ -20895,7 +20895,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 cancel_trinket_motion_for_escape()
 
                 library:Notify(string.format("!! Escape Artists: moderator %s joined - kicking immediately !!", mod_name))
-                escape_artist_send_webhook_async(string.format("Escape Artists: moderator %s joined - kicking immediately", mod_name))
+                trinket_bot.escape_artist_send_webhook_async(string.format("Escape Artists: moderator %s joined - kicking immediately", mod_name))
 
                 pcall(function()
                     plr:Kick(string.format("Moderator %s joined", mod_name))
@@ -21010,7 +21010,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         library:Notify(message)
 
                         -- Never let a slow/stalled HTTP request hold up the actual kick.
-                        escape_artist_send_webhook_async(message)
+                        trinket_bot.escape_artist_send_webhook_async(message)
 
                         pcall(function()
                             plr:Kick(message)
@@ -21018,7 +21018,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
 
                     local function run_escape()
-                        escape_part_cache = escape_artist_create_part_cache(escape_character)
+                        escape_part_cache = trinket_bot.escape_artist_create_part_cache(escape_character)
 
                         -- Escape Artists no longer waits for Danger/combat to clear.
                         -- After 65 seconds, arm the kick. It may only complete once every
