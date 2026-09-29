@@ -3609,26 +3609,26 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         -- Teleport transition watchdog: TeleportInitFailed did not fire, but the
                         -- client can still get stuck in the current server forever. Capture the
                         -- server we were in when the success line printed. If this exact client
-                        -- is still in the same JobId five minutes later, treat the transition as
+                        -- is still in the same JobId three minutes later, treat the transition as
                         -- wedged and kick instead of leaving the bot exposed indefinitely.
                         local transition_job_id = game.JobId
-                        task.delay(300, function()
+                        task.delay(180, function()
                             if game.JobId ~= transition_job_id then
                                 return
                             end
 
-                            warn("[TELEPORT WATCHDOG] Still in the same server 5 minutes after transition wait began - kicking")
+                            warn("[TELEPORT WATCHDOG] Still in the same server 3 minutes after transition wait began - kicking")
 
                             if mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true" then
                                 task.spawn(function()
                                     pcall(function()
-                                        utility:plain_webhook("CRITICAL: Teleport transition stuck for 5 minutes after success print - kicking")
+                                        utility:plain_webhook("CRITICAL: Teleport transition stuck for 3 minutes after success print - kicking")
                                     end)
                                 end)
                             end
 
                             pcall(function()
-                                plr:Kick("Teleport transition stuck for 5 minutes")
+                                plr:Kick("Teleport transition stuck for 3 minutes")
                             end)
                         end)
 
