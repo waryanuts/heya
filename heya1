@@ -3605,6 +3605,33 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                     if not teleport_failed then
                         print("[TELEPORT] Teleport appears successful, waiting for transition...")
+
+                        -- Teleport transition watchdog: TeleportInitFailed did not fire, but the
+                        -- client can still get stuck in the current server forever. Capture the
+                        -- server we were in when the success line printed. If this exact client
+                        -- is still in the same JobId five minutes later, treat the transition as
+                        -- wedged and kick instead of leaving the bot exposed indefinitely.
+                        local transition_job_id = game.JobId
+                        task.delay(300, function()
+                            if game.JobId ~= transition_job_id then
+                                return
+                            end
+
+                            warn("[TELEPORT WATCHDOG] Still in the same server 5 minutes after transition wait began - kicking")
+
+                            if mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true" then
+                                task.spawn(function()
+                                    pcall(function()
+                                        utility:plain_webhook("CRITICAL: Teleport transition stuck for 5 minutes after success print - kicking")
+                                    end)
+                                end)
+                            end
+
+                            pcall(function()
+                                plr:Kick("Teleport transition stuck for 5 minutes")
+                            end)
+                        end)
+
                         task.wait(5)
                         return true
                     else
@@ -12312,7 +12339,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             -- noclip, keep Verdien equipped, charge mana to full, cast, and repeat every
             -- 8 seconds. A player entering 200 studs immediately interrupts the farm and
             -- runs the emergency escape path before disabling the toggle.
-            local DESERT_MIST_FARM_POSITION = Vector3.new(-1199.622, 320.549, 688.112)
+            local DESERT_MIST_FARM_POSITION = Vector3.new(-1199.622, 324.549, 688.112)
             local DESERT_MIST_ESCAPE_POSITION = Vector3.new(-1402.144, 511.998, 1030.832)
             local DESERT_MIST_START_RADIUS = 700
             local DESERT_MIST_PLAYER_RADIUS = 200
