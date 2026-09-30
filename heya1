@@ -360,6 +360,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
     }
     local shared = {
         is_unloading = false,
+        -- Escape Artists owns the session once triggered. While true, all normal
+        -- trinket-bot teleport/serverhop logic must stay dormant until disconnect.
+        escape_artist_takeover = false,
         on_teleport_setup = false,
         on_teleport_connection = nil,
         drawing_containers = {
@@ -3566,6 +3569,17 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         end
 
         function utility:Serverhop()
+            -- Escape Artists has absolute priority over every normal bot serverhop.
+            -- This is checked here as well as in TrinketBotServerhop so even a
+            -- serverhop that was already in progress gets cancelled on takeover.
+            local function escape_artist_owns_session()
+                return shared and shared.escape_artist_takeover == true
+            end
+
+            if escape_artist_owns_session() then
+                return false
+            end
+
             local httpService = Services.HttpService
             local bot_started = mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true"
             if bot_started then
@@ -3593,14 +3607,25 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 local retries = 0
 
                 while retries < maxRetries do
+                    if escape_artist_owns_session() then
+                        return false
+                    end
+
                     teleport_failed = false
                     teleport_fail_reason = ""
 
+                    if escape_artist_owns_session() then
+                        return false
+                    end
                     join_server:FireServer(jobId)
 
                     local timeout = tick() + 20
-                    while tick() < timeout and not teleport_failed do
+                    while tick() < timeout and not teleport_failed and not escape_artist_owns_session() do
                         task.wait(0.1)
+                    end
+
+                    if escape_artist_owns_session() then
+                        return false
                     end
 
                     if not teleport_failed then
@@ -3890,16 +3915,28 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             warn("[SERVERHOP FALLBACK] No non-full servers available at all")
                         end
 
+                        if escape_artist_owns_session() then
+                            return
+                        end
                         utility:plain_webhook("@here SERVERHOP FAILED: All servers full or unavailable after 24 attempts. Kicking bot. if this happens dm zyu")
                         task.wait(0.5)
+                        if escape_artist_owns_session() then
+                            return
+                        end
                         plr:Kick("Serverhop failed, dm zyu if this occurs [1]")
                     else
                         warn("[!] No servers found in ServerInfo, using fallback")
                         if blockTarget then
                             blockPlayer(blockTarget)
                         end
+                        if escape_artist_owns_session() then
+                            return
+                        end
                         tps:Teleport(3016661674)
                         task.wait(0.1)
+                        if escape_artist_owns_session() then
+                            return
+                        end
                         utility:Unload(true)
                     end
                 else
@@ -3907,8 +3944,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if blockTarget then
                         blockPlayer(blockTarget)
                     end
+                    if escape_artist_owns_session() then
+                        return
+                    end
                     tps:Teleport(3016661674)
                     task.wait(0.1)
+                    if escape_artist_owns_session() then
+                        return
+                    end
                     utility:Unload(true)
                 end
             end
@@ -3925,6 +3968,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             end
 
+            if escape_artist_owns_session() then
+                return false
+            end
+
             if join_oldest then
                 local oldest_server_id = utility:get_oldest_server()
                 if oldest_server_id then
@@ -3938,6 +3985,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 else
                     warn("[JOIN OLDEST] Failed to find oldest server, using random")
                 end
+            end
+
+            if escape_artist_owns_session() then
+                return false
             end
 
             if plrs:GetChildren()[2] then
@@ -18747,6 +18798,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             trinket_bot.startup_inventory_preflight_pending = mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true"
 
             local function queue_trinket_kick(trinket_name, detail_message)
+                if shared and shared.escape_artist_takeover then
+                    return false
+                end
+
                 if kick_debounce then
                     return false
                 end
@@ -18781,6 +18836,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             local function check_phoenix_flower_kick_threshold()
+                if shared and shared.escape_artist_takeover then return false end
                 if kick_debounce then return false end
                 if trinket_bot.startup_inventory_preflight_pending then return false end
                 if not (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true") then return false end
@@ -18836,6 +18892,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             function trinket_bot.startup_inventory_preflight_stop_bot(settle_seconds)
+                if shared and shared.escape_artist_takeover then
+                    return true
+                end
+
                 -- Scan more than once because Backpack contents can finish replicating just
                 -- after Character/HRP appears on an automatic rejoin. Auto-rejoin gives the
                 -- inventory a longer settle window; an already-present match exits immediately.
@@ -18844,6 +18904,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 local item_name, pf_count, pf_threshold
 
                 repeat
+                    if shared and shared.escape_artist_takeover then
+                        return true
+                    end
                     item_name, pf_count, pf_threshold = trinket_bot.find_existing_startup_kick_item()
                     if item_name then
                         break
@@ -18938,7 +19001,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 local character_added_connection = nil
 
                 local function bot_session_active()
-                    return mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true"
+                    return not (shared and shared.escape_artist_takeover)
+                        and mem:HasItem("botstarted")
+                        and mem:GetItem("botstarted") == "true"
                 end
 
                 local function disconnect_character_signals()
@@ -19049,6 +19114,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         task.spawn(function()
                             task.wait(0.15)
                             pcall(function()
+                                if shared and shared.escape_artist_takeover then return end
                                 plr:Kick("bot died")
                             end)
                         end)
@@ -19519,6 +19585,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             local function SmoothTeleport(target, is_trinket_teleport)
+                if shared and shared.escape_artist_takeover then
+                    return
+                end
+
                 is_trinket_teleport = is_trinket_teleport or false
 
                 if not plr.Character or not FindFirstChild(plr.Character, "HumanoidRootPart") then
@@ -19565,7 +19635,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 local connection
                 connection = utility:Connection(rs.RenderStepped, LPH_NO_VIRTUALIZE(function()
-                    if shared.is_unloading then
+                    if shared.is_unloading or shared.escape_artist_takeover then
                         if connection then
                             connection:Disconnect()
                             connection = nil
@@ -20212,7 +20282,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local escape_artist_in_danger
             local start_escape_artist_monitor
             local function TrinketBotServerhop(reason, skip_test_mode_check)
-                if trinket_bot.escape_artist_active then
+                if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then
                     return
                 end
 
@@ -20483,7 +20553,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if InAir() then
                     serverhop_success = utility:Serverhop()
                 else
+                    if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then
+                        return
+                    end
                     pcall(function()
+                        if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                         rps.Requests.ReturnToMenu:InvokeServer()
                     end)
                     task.wait(0.1)
@@ -20496,7 +20570,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         utility:plain_webhook("SERVERHOP FAILED - retrying serverhop...")
                     end
 
+                    if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then
+                        return
+                    end
                     pcall(function()
+                        if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                         rps.Requests.ReturnToMenu:InvokeServer()
                     end)
                     task.wait(1)
@@ -20571,18 +20649,30 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             library:Notify("Danger cleared - retrying serverhop now!")
                             utility:plain_webhook("Danger cleared after combat - retrying serverhop")
 
+                            if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then
+                                return
+                            end
                             pcall(function()
+                                if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                                 rps.Requests.ReturnToMenu:InvokeServer()
                             end)
                             task.wait(0.1)
 
                             local final_serverhop = utility:Serverhop()
+                            if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then
+                                return
+                            end
                             if not final_serverhop then
                                 library:Notify("!! SERVERHOP STILL FAILED after danger cleared - kicking !!")
                                 utility:plain_webhook("SERVERHOP FAILED even after danger cleared - kicking for safety")
                                 task.wait(0.5)
+                                if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                                 plr:Kick("Serverhop failed after danger cleared - Kicked for safety.")
                             end
+                            return
+                        end
+
+                        if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then
                             return
                         end
 
@@ -20591,13 +20681,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             utility:plain_webhook("SERVERHOP RETRY FAILED - kicking for safety")
                         end
                         task.wait(0.5)
+                        if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                         plr:Kick("Serverhop failed after retry - Kicked for safety.")
                     end
                 end
             end
 
             local function SafeServerhop(reason, skip_test_mode_check, skip_gate_escape)
-                if trinket_bot.escape_artist_active then
+                if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then
                     return
                 end
 
@@ -20609,7 +20700,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if not plr.Character or not (escape_artist_in_danger and escape_artist_in_danger(plr.Character)) then
                     library:Notify("Not in danger - returning to menu")
                     trinket_bot.path_running = false
+                    if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then
+                        return
+                    end
                     pcall(function()
+                        if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                         rps.Requests.ReturnToMenu:InvokeServer()
                     end)
                     TrinketBotServerhop(reason, skip_test_mode_check)
@@ -20770,6 +20865,37 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             end
 
+            local function disable_other_bot_logic_for_escape()
+                -- One-way session takeover. Escape Artists ends this session by kicking,
+                -- so normal bot logic is never re-enabled in the same server.
+                shared.escape_artist_takeover = true
+                trinket_bot.path_running = false
+                trinket_bot.gate_in_progress = false
+                trinket_bot.idol_pop_in_progress = false
+                emergency_gate_requested = nil
+
+                cancel_trinket_motion_for_escape()
+
+                -- Disconnect every ExecutePath-owned event/Heartbeat watcher. This stops
+                -- proximity, danger-tool, trinket, moderator, illusionist, gnav, ping,
+                -- and other normal bot callbacks from racing Escape Artists.
+                local function disconnect_table(tbl)
+                    if type(tbl) ~= "table" then return end
+                    for key, connection in pairs(tbl) do
+                        pcall(function()
+                            if connection and connection.Disconnect then
+                                connection:Disconnect()
+                            end
+                        end)
+                        tbl[key] = nil
+                    end
+                end
+
+                disconnect_table(trinket_bot.connections)
+                disconnect_table(trinket_bot.illu_connections)
+                disconnect_table(trinket_bot.gnav_connections)
+            end
+
             local function escape_artist_noclip(character)
                 if not character then return end
                 for _, object in ipairs(character:GetDescendants()) do
@@ -20789,8 +20915,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 local mod_name = moderator_player.Name
                 trinket_bot.moderator_detected = true
-                trinket_bot.path_running = false
-                cancel_trinket_motion_for_escape()
+                trinket_bot.escape_artist_active = true
+                disable_other_bot_logic_for_escape()
 
                 library:Notify(string.format("!! Escape Artists: moderator %s joined - kicking immediately !!", mod_name))
                 if utility then
@@ -20814,9 +20940,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
 
                 trinket_bot.escape_artist_active = true
-                trinket_bot.path_running = false
-                trinket_bot.gate_in_progress = false
-                cancel_trinket_motion_for_escape()
+                disable_other_bot_logic_for_escape()
 
                 -- Offset Mobs should never fight the emergency movement.
                 offset_mobs_gate_paused = true
@@ -21162,6 +21286,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             local function handle_moderator_detection(moderator_player)
                 if not moderator_player then return end
+                if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
 
                 if escape_artists_enabled() and escape_artist_moderator_kick(moderator_player) then
                     return
@@ -21217,6 +21342,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
 
                     task.wait(0.5)
+                    if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                     plr:Kick(string.format("Moderator %s encountered %d times - Bot session terminated", mod_name, encounter_count))
                 elseif plr.Character and cs:HasTag(plr.Character, "Danger") then
                     library:Notify(string.format("!! MODERATOR %s DETECTED WHILE IN DANGER - KICKING IMMEDIATELY !!", mod_name))
@@ -21226,6 +21352,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
 
                     task.wait(0.5)
+                    if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                     plr:Kick(string.format("Moderator %s detected while in danger", mod_name))
                 else
                     library:Notify(string.format("!! MODERATOR %s DETECTED (encounter %d/3) - IMMEDIATE SERVERHOP !!", mod_name, encounter_count))
@@ -21355,6 +21482,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return
                 end
 
+                if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then
+                    return
+                end
+
                 test_mode = test_mode or false
                 trinket_bot.test_mode = test_mode
 
@@ -21406,6 +21537,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             utility:plain_webhook("failed to start: blatant mode not enabled - Kicking (dm the bot if this is an error)")
                         end
                         task.wait(1)
+                        if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                         plr:Kick("Bot failed to start: Blatant Mode not enabled")
                     end
                     return
@@ -21418,6 +21550,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             utility:plain_webhook(string.format("BOT FAILED TO START: No path points loaded - Kicking (serverhop_count=%d)", serverhop_count))
                         end
                         task.wait(1)
+                        if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                         plr:Kick("Bot failed to start: No path points loaded")
                     end
                     return
@@ -21459,6 +21592,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         if not test_mode and mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true" then
                             utility:plain_webhook(string.format("**BOT KICKED**: Too far from first point (%.1f studs, max: 400)", distance_to_first))
                             task.wait(1)
+                            if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                             plr:Kick(string.format("Too far from first point: %.1f studs (max: 400)", distance_to_first))
                         end
                         return
@@ -21530,6 +21664,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             utility:plain_webhook("CRITICAL: Humanoid not found in ExecutePath - kicking for safety")
                             library:Notify("CRITICAL: Humanoid not found - kicking")
                             task.wait(0.5)
+                            if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                             plr:Kick("Humanoid not found - cannot run trinket path")
                         end
                         return
@@ -21540,6 +21675,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         utility:plain_webhook("CRITICAL: Character not found in ExecutePath - kicking for safety")
                         library:Notify("CRITICAL: Character not found - kicking")
                         task.wait(0.5)
+                        if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                         plr:Kick("Character not found - cannot run trinket path")
                     end
                     return
@@ -21736,6 +21872,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if utility and utility.plain_webhook then
                         utility:plain_webhook(reason)
                     end
+                    if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return false end
                     plr:Kick(reason)
                     return true
                 end
@@ -21787,6 +21924,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     ["Duobe"] = math.huge,
                     ["Opal Shard"] = 1200,
                     ["Justice Spears"] = 850,
+                    ["Armis"] = 750,
                     ["Fimbulvetr"] = 830,
                     ["Manus Dei"] = 830,
                     ["Telorum"] = 650,
@@ -24121,6 +24259,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     library:Notify(string.format("Reached last point! Kicking for %s...", kick_trinket_name))
                     utility:artifact_plain_webhook(string.format("Reached last point after picking up %s - Kicking now", kick_trinket_name), kick_trinket_name)
                     task.wait(0.5)
+                    if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                     plr:Kick(string.format("%s picked up (completed path to last point)", kick_trinket_name))
                     return
                 end
@@ -24669,8 +24808,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             group_trinket_bot:AddDropdown("EmergencyServerhopConditions", {
                 Text = "Emergency Serverhop Conditions",
-                Tooltip = "Equipped only: Perflora/Duobe = infinite; Opal Shard = 1200; Justice Spears = 850; Fimbulvetr/Manus Dei = 830; Dagger Throw = 700; Telorum/Pebble = 650; Celeritas = 600; Vulnere = 500 studs",
-                Values = {"Perflora", "Duobe", "Opal Shard", "Justice Spears", "Fimbulvetr", "Manus Dei", "Dagger Throw", "Telorum", "Pebble", "Vulnere", "Celeritas"},
+                Tooltip = "Equipped only: Perflora/Duobe = infinite; Opal Shard = 1200; Justice Spears = 850; Armis = 750; Fimbulvetr/Manus Dei = 830; Dagger Throw = 700; Telorum/Pebble = 650; Celeritas = 600; Vulnere = 500 studs",
+                Values = {"Perflora", "Duobe", "Opal Shard", "Justice Spears", "Armis", "Fimbulvetr", "Manus Dei", "Dagger Throw", "Telorum", "Pebble", "Vulnere", "Celeritas"},
                 Multi = true,
                 Default = {"Perflora", "Pebble", "Celeritas"},
                 Compact = true
@@ -25003,6 +25142,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             task.spawn(function()
                 if mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true" then
                     task.wait(2)
+                    if shared and shared.escape_artist_takeover then return end
 
                     trinket_bot.path_running = false
 
@@ -25084,9 +25224,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             end
                         end)
 
-                        repeat task.wait(0.25) until plr.Character
-                        repeat task.wait(0.25) until plr.Character:FindFirstChild("HumanoidRootPart")
+                        repeat task.wait(0.25) until plr.Character or (shared and shared.escape_artist_takeover)
+                        if shared and shared.escape_artist_takeover then return end
+                        repeat task.wait(0.25) until plr.Character:FindFirstChild("HumanoidRootPart") or (shared and shared.escape_artist_takeover)
+                        if shared and shared.escape_artist_takeover then return end
                         task.wait(1)
+                        if shared and shared.escape_artist_takeover then return end
 
                         -- Automatic rejoin preflight happens before saved-position recovery,
                         -- SmoothTeleport, Gate recovery, or ExecutePath can do any bot work.
@@ -25113,6 +25256,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         pcall(function() library:Notify("Died during auto-start - kicking") end)
                                         pcall(function() utility:plain_webhook("Bot died during auto-start - kicking") end)
                                         task.wait(0.3)
+                                        if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                                         plr:Kick("Bot died during auto-start")
                                     end
                                 end)
@@ -25120,6 +25264,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 utility:plain_webhook("CRITICAL: Humanoid not found during auto-start - kicking for safety")
                                 library:Notify("CRITICAL: Humanoid not found - kicking")
                                 task.wait(0.5)
+                                if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                                 plr:Kick("Humanoid not found during auto-start")
                                 return
                             end
@@ -25127,6 +25272,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             utility:plain_webhook("CRITICAL: Character lost during auto-start - kicking for safety")
                             library:Notify("CRITICAL: Character lost - kicking")
                             task.wait(0.5)
+                            if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                             plr:Kick("Character lost during auto-start")
                             return
                         end
@@ -25141,6 +25287,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             library:Notify("CRITICAL: No saved path found - kicking")
                             mem:RemoveItem("botstarted")
                             task.wait(0.5)
+                            if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                             plr:Kick("No saved path found during auto-start")
                             return
                         end
@@ -25157,6 +25304,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             library:Notify("Path failed to load! Kicking...")
                             mem:RemoveItem("botstarted")
                             task.wait(1)
+                            if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                             plr:Kick(string.format("Path failed to load: %s", saved_path))
                             return
                         end
@@ -25752,6 +25900,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             library:Notify("CRITICAL: Character lost after path load - kicking")
                             mem:RemoveItem("botstarted")
                             task.wait(0.5)
+                            if trinket_bot.escape_artist_active or (shared and shared.escape_artist_takeover) then return end
                             plr:Kick("Character lost after path load during auto-start")
                             return
                         end
@@ -26166,6 +26315,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 while shared and not shared.is_unloading do
                     task.wait(IDOL_LOOP_INTERVAL)
 
+                    if shared and shared.escape_artist_takeover then
+                        trinket_bot.idol_pop_in_progress = false
+                        continue
+                    end
+
                     local enabled = Toggles.AutoPopIdolOfWar and Toggles.AutoPopIdolOfWar.Value
                     if not enabled or trinket_bot.gate_in_progress then
                         trinket_bot.idol_pop_in_progress = false
@@ -26185,6 +26339,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             task.wait(IDOL_USE_DELAY)
 
                             while shared and not shared.is_unloading do
+                                if shared.escape_artist_takeover then
+                                    break
+                                end
                                 if not (Toggles.AutoPopIdolOfWar and Toggles.AutoPopIdolOfWar.Value) then
                                     break
                                 end
@@ -26229,6 +26386,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 }
 
                 local function can_pop_pd()
+                    if shared and shared.escape_artist_takeover then
+                        return false
+                    end
+
                     if not (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true") then
                         return false
                     end
@@ -26353,6 +26514,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             local function drop_item(item)
+                if shared and shared.escape_artist_takeover then
+                    return
+                end
+
                 if not (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true") then
                     return
                 end
@@ -26477,6 +26642,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             local function setup_backpack_monitoring()
+                if shared and shared.escape_artist_takeover then
+                    return
+                end
+
                 if auto_drop_backpack_connection then
                     auto_drop_backpack_connection:Disconnect()
                     auto_drop_backpack_connection = nil
@@ -26493,6 +26662,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
 
                 auto_drop_backpack_connection = utility:Connection(backpack.ChildAdded, function(obj)
+                    if shared and shared.escape_artist_takeover then return end
                     if not obj then return end
 
                     local bot_started = mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true"
