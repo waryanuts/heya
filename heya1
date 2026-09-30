@@ -20725,17 +20725,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             --   2) HP <80% + player <=100 studs = IMMEDIATE takeover.
             --   3) Player <=50 studs = LAST RESORT only after normal serverhop
             --      attempts are exhausted.
-            -- Movement is fixed at 150 studs/sec. Normalize vertically to a random Y from 25-100 first
-            -- (climb OR descend), then travel toward a random horizontal point 10,000
-            -- studs away while zigzagging laterally and vertically. If that endpoint is
-            -- reached before the timer expires, tween back along the same escape line
-            -- to a point 6,000 studs from the original X/Z while preserving the current Y,
-            -- then choose a fresh 10,000-stud leg and repeat. After 65 seconds from trigger,
-            -- arm the exit: only webhook + self-kick "Escaped X" once no player is
-            -- within 500 studs. If anyone is still within 500, keep escaping.
-            local ESCAPE_ARTIST_SPEED = 150
-                        local ESCAPE_ARTIST_TRAVEL_DISTANCE = 10000
-            local ESCAPE_ARTIST_RETURN_OFFSET = 6000
+            -- Movement is fixed at 180 studs/sec. Normalize vertically to a random Y from 25-100 first
+            -- (climb OR descend), then keep running outward on 100,000-stud horizontal escape legs
+            -- while zigzagging laterally and vertically. There is NO return-to-origin/offset phase.
+            -- After 65 seconds from trigger, arm the exit: only webhook + self-kick "Escaped X"
+            -- once no player is within 500 studs. If anyone is still within 500, keep escaping.
+            local ESCAPE_ARTIST_SPEED = 180
+            local ESCAPE_ARTIST_TRAVEL_DISTANCE = 100000
             local ESCAPE_ARTIST_NEAR_RANGE = 50
             local ESCAPE_ARTIST_LOW_HP_RANGE = 100
             local ESCAPE_ARTIST_LOW_HP_THRESHOLD = 0.80
@@ -20858,17 +20854,41 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                     local function escaped_kick()
                         if finished then return end
+
+                        -- Latch the escape as finished BEFORE doing any network/UI work so
+                        -- the Heartbeat movement loops stop immediately and no second exit
+                        -- attempt can race this one. Keep escape_artist_active=true until the
+                        -- client disconnects so session-level bot/serverhop logic stays blocked.
                         finished = true
                         disconnect_escape_mod_watch()
+                        cancel_trinket_motion_for_escape()
 
                         local message = string.format("Escaped %s", escaped_player_name)
-                        library:Notify(message)
-                        if utility then
-                            utility:plain_webhook(message)
-                        end
                         pcall(function()
-                            plr:Kick(message)
+                            library:Notify(message)
                         end)
+
+                        -- Never let a webhook request delay or interfere with the actual kick.
+                        if utility and utility.plain_webhook then
+                            task.spawn(function()
+                                pcall(function()
+                                    utility:plain_webhook(message)
+                                end)
+                            end)
+                        end
+
+                        -- Use the cloned Player.Kick captured at startup. This avoids routing the
+                        -- Escape Artists exit through any later namecall/hook state. Fire it once.
+                        local kicked = pcall(function()
+                            Kick(plr, message)
+                        end)
+
+                        -- Extremely small fallback only if the cloned Kick itself errored.
+                        if not kicked then
+                            pcall(function()
+                                plr:Kick(message)
+                            end)
+                        end
                     end
 
                     -- Escape Artists no longer waits for Danger/combat to clear.
@@ -20931,11 +20951,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             and escape_humanoid.Health > 0
                     end
 
-                    -- Preserve the X/Z where Escape Artists began. The fallback return leg
-                    -- later uses this as its anchor, but never returns all the way onto it.
-                    local escape_origin = escape_root.Position
-
-                    -- Phase 1: normalize vertically to a random Y between 25 and 100 at exactly 150 studs/sec.
+                    -- Phase 1: normalize vertically to a random Y between 25 and 100 at exactly 180 studs/sec.
                     -- This works from either side: low positions climb, high positions descend.
                     local escape_target_y = math.random(ESCAPE_ARTIST_MIN_Y, ESCAPE_ARTIST_MAX_Y)
                     while character_still_valid() and math.abs(escape_root.Position.Y - escape_target_y) > 0.5 do
@@ -20954,51 +20970,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         return
                     end
 
-                    -- Phase 2: repeatedly run a 10,000-stud zigzag escape leg. If the
-                    -- endpoint is reached before the 65-second kick arm, tween back
-                    -- toward the original X/Z but stop 6,000 studs away from it on the same
-                    -- escape line. The tween preserves the Y that the zigzag leg ended at.
+                    -- Phase 2: repeatedly run 100,000-stud zigzag escape legs.
+                    -- Every new leg starts from the CURRENT position, so Escape Artists never
+                    -- turns around or travels back toward its original position.
                     local function choose_far_direction()
                         local angle = math.random() * math.pi * 2
                         local forward = Vector3.new(math.cos(angle), 0, math.sin(angle))
-                        local origin_xz = Vector3.new(escape_origin.X, 0, escape_origin.Z)
-                        local destination = origin_xz + (forward * ESCAPE_ARTIST_TRAVEL_DISTANCE)
+                        local current_xz = Vector3.new(escape_root.Position.X, 0, escape_root.Position.Z)
+                        local destination = current_xz + (forward * ESCAPE_ARTIST_TRAVEL_DISTANCE)
                         return forward, Vector3.new(destination.X, escape_root.Position.Y, destination.Z)
-                    end
-
-                    local function tween_return_to_offset(forward)
-                        if not character_still_valid() then
-                            return false
-                        end
-
-                        local return_y = escape_root.Position.Y
-                        local origin_xz = Vector3.new(escape_origin.X, 0, escape_origin.Z)
-                        local return_xz = origin_xz + (forward * ESCAPE_ARTIST_RETURN_OFFSET)
-                        local return_position = Vector3.new(return_xz.X, return_y, return_xz.Z)
-                        local return_distance = (return_position - escape_root.Position).Magnitude
-
-                        if return_distance <= 1 then
-                            return true
-                        end
-
-                        local rotation_only = escape_root.CFrame - escape_root.Position
-                        local return_cframe = CFrame.new(return_position) * rotation_only
-                        local duration = return_distance / ESCAPE_ARTIST_SPEED
-                        local return_tween = ts:Create(
-                            escape_root,
-                            TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
-                            {CFrame = return_cframe}
-                        )
-
-                        return_tween:Play()
-
-                        while character_still_valid() and return_tween.PlaybackState == Enum.PlaybackState.Playing do
-                            escape_artist_noclip(escape_character)
-                            rs.Heartbeat:Wait()
-                        end
-
-                        pcall(function() return_tween:Cancel() end)
-                        return character_still_valid()
                     end
 
                     while character_still_valid() do
@@ -21048,10 +21028,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
 
                         if reached_destination then
-                            library:Notify("Escape Artists: 10,000-stud endpoint reached - tweening back to 6,000-stud offset")
-                            if not tween_return_to_offset(forward) then
-                                return
-                            end
+                            library:Notify("Escape Artists: 100,000-stud endpoint reached - continuing outward")
                         end
                     end
 
@@ -24684,7 +24661,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 group_trinket_bot:AddToggle("EscapeArtists", {
                     Text = "Escape Artists",
                     Default = false,
-                    Tooltip = "Khei only: below 25% HP takes over immediately anywhere. Below 80% HP + player within 100 studs also takes over immediately. Player within 50 studs is last resort after serverhop attempts fail. Normalizes to a random Y from 25-100 and keeps the zigzag within Y=25-100 at fixed 150 speed. After 65 seconds it only kicks + webhooks once no player is within 500 studs; otherwise it keeps escaping. Moderator joins kick immediately."
+                    Tooltip = "Khei only: below 25% HP takes over immediately anywhere. Below 80% HP + player within 100 studs also takes over immediately. Player within 50 studs is last resort after serverhop attempts fail. Normalizes to a random Y from 25-100 and keeps running outward on 100,000-stud zigzag legs within Y=25-100 at fixed 180 speed. It never returns toward the origin. After 65 seconds it only kicks + webhooks once no player is within 500 studs; otherwise it keeps escaping. Moderator joins kick immediately."
                 })
             end
 
