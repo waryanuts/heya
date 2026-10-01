@@ -622,6 +622,17 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             pop_phoenix_flowers = false,
             offset_mobs_exploit = false,
             desert_mist_farm = false,
+
+            -- Number of configurable slots rendered immediately to the right of the native hotbar.
+            -- 0 keeps the extension hidden on execution; the Exploits slider can show 1-3.
+            extended_hotbar_slots = 0,
+            extended_hotbar_tool_1 = "",
+            extended_hotbar_tool_2 = "",
+            extended_hotbar_tool_3 = "",
+            extended_hotbar_key_1 = "None",
+            extended_hotbar_key_2 = "None",
+            extended_hotbar_key_3 = "None",
+
             no_killbrick = false,
             no_mob_trigger = false,
             freecam = false,
@@ -8977,6 +8988,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 overlay = nil,
                 tween = nil,
 
+                -- UI-independent timing cache used by the extended hotbar.
+                -- This survives even when the move has no native MainFrame hotbar card.
+                cooldown_duration = 0,
+                cooldown_end_at = 0,
+
                 special_active = false,
                 special_started_at = nil,
                 special_button = nil,
@@ -9590,10 +9606,30 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 destroy_shared_visuals()
             end
 
+            -- Read-only timing bridge for custom extended-hotbar cards.
+            local function get_active_visual(move_name)
+                if not cheat_client.config.cooldown_visualizer or not snap_profiles[move_name] then
+                    return nil
+                end
+
+                local total = tonumber(snap_state.shared_duration) or 0
+                local remaining = (tonumber(snap_state.shared_end_at) or 0) - os.clock()
+
+                if total <= 0 or remaining <= 0 then
+                    return nil
+                end
+
+                return {
+                    duration = total,
+                    remaining = math.min(remaining, total),
+                }
+            end
+
             return {
                 handle_remote = handle_remote,
                 handle_descendant_added = handle_descendant_added,
                 reset_all = reset_all,
+                get_active_visual = get_active_visual,
             }
         end)()
 
@@ -9653,6 +9689,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             state.move_in_progress = false
 
             cancel_visual(profile)
+
+            -- Hard reset path (disable/respawn/cleanup). Replacing a live visual does
+            -- not clear this cache; only a true reset does.
+            state.cooldown_duration = 0
+            state.cooldown_end_at = 0
         end
 
         local function clear_all()
@@ -9691,15 +9732,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return
             end
 
-            local move_button = cached_button
-            if not move_button or not move_button.Parent then
-                move_button = find_hotbar_button(profile.name)
-            end
-
-            if not move_button then
-                return
-            end
-
             local total_duration = tonumber(duration_override) or profile.cooldown_time
             if total_duration <= 0 then
                 return
@@ -9708,17 +9740,33 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local elapsed = math.clamp(tonumber(elapsed_offset) or 0, 0, total_duration)
             local remaining = total_duration - elapsed
 
-            -- Base behavior: every confirmed valid use ALWAYS replaces the
-            -- previous visual for this move.
+            -- Every confirmed valid use replaces the previous native visual, but the
+            -- timing itself is independent from Rogue's MainFrame UI. This is what lets
+            -- a move assigned only to an extended slot still display its cooldown.
             cancel_visual(profile)
+
+            if remaining <= 0 then
+                state.cooldown_duration = 0
+                state.cooldown_end_at = 0
+                return
+            end
+
+            state.cooldown_duration = total_duration
+            state.cooldown_end_at = os.clock() + remaining
+
+            local move_button = cached_button
+            if not move_button or not move_button.Parent then
+                move_button = find_hotbar_button(profile.name)
+            end
+
+            -- No native card is fine. The extended hotbar queries the timing cache below.
+            if not move_button then
+                return
+            end
 
             local old_overlay = FindFirstChild(move_button, "CooldownVisualizerOverlay")
             if old_overlay then
                 old_overlay:Destroy()
-            end
-
-            if remaining <= 0 then
-                return
             end
 
             local remaining_ratio = remaining / total_duration
@@ -9758,6 +9806,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 state.tween = nil
                 state.overlay = nil
+
+                if state.cooldown_end_at <= os.clock() then
+                    state.cooldown_duration = 0
+                    state.cooldown_end_at = 0
+                end
 
                 if overlay and overlay.Parent then
                     overlay:Destroy()
@@ -10273,6 +10326,44 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         return {
             handle_remote = handle_remote,
             set_enabled = set_enabled,
+
+            -- Read-only timing bridge used by the extended hotbar. It exposes timing
+            -- only, not native GUI instances, so the extension can rebuild freely.
+            get_active_visuals = function(move_name)
+                if not cheat_client.config.cooldown_visualizer
+                    or type(move_name) ~= "string"
+                    or move_name == ""
+                then
+                    return nil
+                end
+
+                local now = os.clock()
+                local result = nil
+                local state = states[move_name]
+
+                if state then
+                    local total = tonumber(state.cooldown_duration) or 0
+                    local remaining = (tonumber(state.cooldown_end_at) or 0) - now
+
+                    if total > 0 and remaining > 0 then
+                        result = result or {}
+                        result.normal = {
+                            duration = total,
+                            remaining = math.min(remaining, total),
+                        }
+                    end
+                end
+
+                if snap_system and snap_system.get_active_visual then
+                    local snap = snap_system.get_active_visual(move_name)
+                    if snap then
+                        result = result or {}
+                        result.snap = snap
+                    end
+                end
+
+                return result
+            end,
         }
     end)()
 
@@ -12328,6 +12419,1726 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local group_character = Tabs.Exploits:AddLeftGroupbox("Character")
             local group_camera = Tabs.Exploits:AddRightGroupbox("Camera")
             local group_exploits = Tabs.Exploits:AddRightGroupbox("Exploits")
+
+            ------------------------------------------------------------------------------
+            -- EXTENDED HOTBAR (+3)
+            --
+            -- Rogue's BackpackGui.MainFrame contains the native SlotMarker ImageLabels.
+            -- We clone the right-most marker three times and place the copies immediately
+            -- to its right.  The actual configurable buttons are children of those clones,
+            -- so BackpackClient will not mistake them for native MainFrame TextButtons.
+            ------------------------------------------------------------------------------
+            ;(function()
+                local EXTENDED_HOTBAR_SLOT_COUNT = 3
+                local EXTENDED_HOTBAR_MARKER_PREFIX = "HXDExtraHotbarSlot"
+                local extended_hotbar_main = nil
+                local extended_hotbar_refresh_busy = false
+                local extended_hotbar_original_clip = setmetatable({}, {__mode = "k"})
+                local extended_hotbar_extra_drag = nil
+                local extended_hotbar_tooltip = nil
+                local extended_hotbar_hover_serial = 0
+                local extended_hotbar_equip = nil
+                local extended_hotbar_bind_extra_button = nil
+                local extended_hotbar_drag_tool_name = nil
+                local extended_hotbar_refresh = nil
+                local extended_hotbar_save_options = {}
+                local extended_hotbar_inventory_visual_cache = setmetatable({}, {__mode = "v"})
+
+                local function extended_hotbar_trim(value)
+                    return (tostring(value or ""):match("^%s*(.-)%s*$") or "")
+                end
+
+                local function extended_hotbar_tool_field(index)
+                    return "extended_hotbar_tool_" .. tostring(index)
+                end
+
+                local function extended_hotbar_key_field(index)
+                    return "extended_hotbar_key_" .. tostring(index)
+                end
+
+                local function extended_hotbar_get_tool_name(index)
+                    return extended_hotbar_trim(cheat_client.config[extended_hotbar_tool_field(index)])
+                end
+
+                local function extended_hotbar_store_tool_name(index, value)
+                    value = extended_hotbar_trim(value)
+                    cheat_client.config[extended_hotbar_tool_field(index)] = value
+
+                    local save_option = extended_hotbar_save_options[index]
+                    if save_option then
+                        save_option.Value = value
+                    end
+
+                    return value
+                end
+
+                -- SaveManager only serializes entries in Options/Toggles.  Register three
+                -- invisible Input-compatible option objects so the drag assignments become
+                -- part of the user's normal config JSON without adding tool-name textboxes
+                -- back to the menu. SaveManager.Load calls :SetValue(), which restores the
+                -- assignment independently of temporary disarm/removal state.
+                for index = 1, EXTENDED_HOTBAR_SLOT_COUNT do
+                    local slot_index = index
+                    local option_id = "ExtendedHotbarSavedTool" .. tostring(slot_index)
+                    local option = {
+                        Type = "Input",
+                        Value = extended_hotbar_get_tool_name(slot_index),
+                    }
+
+                    function option:SetValue(value)
+                        self.Value = extended_hotbar_store_tool_name(slot_index, value)
+
+                        task.defer(function()
+                            if extended_hotbar_refresh and shared and not shared.is_unloading then
+                                extended_hotbar_refresh()
+                            end
+                        end)
+                    end
+
+                    Options[option_id] = option
+                    extended_hotbar_save_options[slot_index] = option
+                end
+
+                local function extended_hotbar_get_key(index)
+                    local value = cheat_client.config[extended_hotbar_key_field(index)]
+                    if value == nil or value == "" then
+                        return "None"
+                    end
+                    return tostring(value)
+                end
+
+                local function extended_hotbar_slot_count()
+                    return math.clamp(math.floor((tonumber(cheat_client.config.extended_hotbar_slots) or 0) + 0.5), 0, EXTENDED_HOTBAR_SLOT_COUNT)
+                end
+
+                local function extended_hotbar_key_text(index)
+                    local value = extended_hotbar_get_key(index)
+                    if value == "None" then
+                        return ""
+                    end
+
+                    -- Keep common key names compact enough to fit the game's Slot label.
+                    local compact = {
+                        MouseButton1 = "M1",
+                        MouseButton2 = "M2",
+                        MouseButton3 = "M3",
+                        LeftControl = "LCtrl",
+                        RightControl = "RCtrl",
+                        LeftShift = "LShift",
+                        RightShift = "RShift",
+                        LeftAlt = "LAlt",
+                        RightAlt = "RAlt",
+                        Return = "Enter",
+                        KeypadZero = "N0",
+                        KeypadOne = "N1",
+                        KeypadTwo = "N2",
+                        KeypadThree = "N3",
+                        KeypadFour = "N4",
+                        KeypadFive = "N5",
+                        KeypadSix = "N6",
+                        KeypadSeven = "N7",
+                        KeypadEight = "N8",
+                        KeypadNine = "N9",
+                        KeypadPeriod = "N.",
+                        KeypadDivide = "N/",
+                        KeypadMultiply = "N*",
+                        KeypadMinus = "N-",
+                        KeypadPlus = "N+",
+                        KeypadEnter = "NEnt",
+                    }
+
+                    return compact[value] or value
+                end
+
+                local function extended_hotbar_get_mainframe()
+                    local player_gui = plr and FindFirstChild(plr, "PlayerGui")
+                    local backpack_gui = player_gui and FindFirstChild(player_gui, "BackpackGui")
+                    local main_frame = backpack_gui and FindFirstChild(backpack_gui, "MainFrame")
+
+                    if main_frame and main_frame:IsA("GuiObject") then
+                        return main_frame
+                    end
+
+                    return nil
+                end
+
+                local function extended_hotbar_get_backpack_gui()
+                    local player_gui = plr and FindFirstChild(plr, "PlayerGui")
+                    local backpack_gui = player_gui and FindFirstChild(player_gui, "BackpackGui")
+                    return backpack_gui
+                end
+
+                local function extended_hotbar_backpack_open()
+                    local backpack_gui = extended_hotbar_get_backpack_gui()
+                    local backpack_frame = backpack_gui and FindFirstChild(backpack_gui, "BackpackFrame")
+                    return backpack_frame
+                        and backpack_frame:IsA("GuiObject")
+                        and backpack_frame.Visible
+                        or false
+                end
+
+                local function extended_hotbar_hide_tooltip()
+                    extended_hotbar_hover_serial += 1
+
+                    if extended_hotbar_tooltip then
+                        pcall(function()
+                            extended_hotbar_tooltip:Destroy()
+                        end)
+                        extended_hotbar_tooltip = nil
+                    end
+                end
+
+                local function extended_hotbar_get_tool_instance(index)
+                    local tool_name = extended_hotbar_get_tool_name(index)
+                    if tool_name == "" then
+                        return nil
+                    end
+
+                    local character = plr.Character
+                    local backpack = plr:FindFirstChildOfClass("Backpack") or FindFirstChild(plr, "Backpack")
+
+                    for _, container in ipairs({character, backpack}) do
+                        if container then
+                            local exact = FindFirstChild(container, tool_name)
+                            if exact and exact:IsA("Tool") then
+                                return exact
+                            end
+                        end
+                    end
+
+                    local wanted = string.lower(tool_name)
+                    for _, container in ipairs({character, backpack}) do
+                        if container then
+                            for _, object in ipairs(container:GetChildren()) do
+                                if object:IsA("Tool") and string.lower(object.Name) == wanted then
+                                    return object
+                                end
+                            end
+                        end
+                    end
+
+                    return nil
+                end
+
+                local function extended_hotbar_show_tooltip(index, marker, button)
+                    extended_hotbar_hide_tooltip()
+
+                    if not marker or not marker.Parent or not button or not button.Parent then
+                        return
+                    end
+
+                    local tool = extended_hotbar_get_tool_instance(index)
+                    local tooltip_text = tool and extended_hotbar_trim(tool.ToolTip) or ""
+                    if tooltip_text == "" then
+                        return
+                    end
+
+                    local backpack_gui = extended_hotbar_get_backpack_gui()
+                    if not backpack_gui then
+                        return
+                    end
+
+                    -- Exact values from Rogue's native TipDisplay dump:
+                    --   Frame: AnchorPoint .5/0, height 18, BG black @ 0.5, ZIndex 7.
+                    --   Descriptor: SourceSansPro Bold Italic 13, TextYAlignment.Top,
+                    --               warm parchment text, dark 50% text stroke.
+                    --   Shadow: +2/+2, black @ 0.7 transparency.
+                    --   Border: asset 79238657262784 using 9-slice scaling,
+                    --           SliceCenter 3,3,17,17 and a 1px outward overdraw.
+                    -- Native tooltip width is content-dependent. For the captured
+                    -- "Did anyone order an anvil?" tooltip, TextBounds.X was 126 and
+                    -- TipDisplay width was 135, i.e. text width + 9px.
+                    local tooltip_font = Font.new(
+                        "rbxasset://fonts/families/SourceSansPro.json",
+                        Enum.FontWeight.Bold,
+                        Enum.FontStyle.Italic
+                    )
+
+                    local text_width = nil
+
+                    -- Prefer FontFace-aware measurement so Bold Italic spacing matches Rogue.
+                    pcall(function()
+                        local params = Instance.new("GetTextBoundsParams")
+                        params.Text = tooltip_text
+                        params.Font = tooltip_font
+                        params.Size = 13
+                        params.Width = 10000
+
+                        local bounds = Services.TextService:GetTextBoundsAsync(params)
+                        if bounds and bounds.X and bounds.X > 0 then
+                            text_width = bounds.X
+                        end
+                    end)
+
+                    -- Older clients/executors may not expose GetTextBoundsAsync.
+                    if not text_width then
+                        pcall(function()
+                            local bounds = Services.TextService:GetTextSize(
+                                tooltip_text,
+                                13,
+                                Enum.Font.SourceSansBold,
+                                Vector2.new(10000, 18)
+                            )
+                            if bounds and bounds.X and bounds.X > 0 then
+                                text_width = bounds.X
+                            end
+                        end)
+                    end
+
+                    -- Conservative fallback only if TextService measurement is unavailable.
+                    local width = math.max(18, math.ceil((text_width or (#tooltip_text * 6)) + 9))
+
+                    local frame = Instance.new("Frame")
+                    frame.Name = "HXDExtraHotbarTipDisplay"
+                    frame.AnchorPoint = Vector2.new(0.5, 0)
+                    frame.Size = UDim2.fromOffset(width, 18)
+                    frame.AutomaticSize = Enum.AutomaticSize.None
+                    frame.BackgroundColor3 = Color3.new(0, 0, 0)
+                    frame.BackgroundTransparency = 0.5
+                    frame.BorderSizePixel = 0
+                    frame.ZIndex = 7
+                    frame.Active = false
+                    frame.ClipsDescendants = false
+
+                    local descriptor = Instance.new("TextLabel")
+                    descriptor.Name = "Descriptor"
+                    descriptor.Position = UDim2.new(0.025, 0, 0.1, 0)
+                    descriptor.Size = UDim2.new(0.95, 0, 0.9, 0)
+                    descriptor.AutomaticSize = Enum.AutomaticSize.None
+                    descriptor.BackgroundTransparency = 1
+                    descriptor.Text = tooltip_text
+                    descriptor.TextColor3 = Color3.fromRGB(255, 233, 217)
+                    descriptor.TextTransparency = 0
+                    descriptor.TextStrokeColor3 = Color3.fromRGB(56, 50, 45)
+                    descriptor.TextStrokeTransparency = 0.5
+                    descriptor.TextSize = 13
+                    descriptor.TextScaled = false
+                    descriptor.TextWrapped = false
+                    descriptor.TextXAlignment = Enum.TextXAlignment.Center
+                    descriptor.TextYAlignment = Enum.TextYAlignment.Top
+                    descriptor.ZIndex = 9
+                    pcall(function()
+                        descriptor.FontFace = tooltip_font
+                    end)
+                    descriptor.Parent = frame
+
+                    local shadow = Instance.new("TextLabel")
+                    shadow.Name = "Shadow"
+                    shadow.Position = UDim2.fromOffset(2, 2)
+                    shadow.Size = UDim2.fromScale(1, 1)
+                    shadow.AutomaticSize = Enum.AutomaticSize.None
+                    shadow.BackgroundTransparency = 1
+                    shadow.Text = tooltip_text
+                    shadow.TextColor3 = Color3.new(0, 0, 0)
+                    shadow.TextTransparency = 0.7
+                    shadow.TextStrokeColor3 = Color3.new(0, 0, 0)
+                    shadow.TextStrokeTransparency = 1
+                    shadow.TextSize = 13
+                    shadow.TextScaled = false
+                    shadow.TextWrapped = false
+                    shadow.TextXAlignment = Enum.TextXAlignment.Center
+                    shadow.TextYAlignment = Enum.TextYAlignment.Top
+                    shadow.ZIndex = 8
+                    pcall(function()
+                        shadow.FontFace = tooltip_font
+                    end)
+                    shadow.Parent = descriptor
+
+                    local border = Instance.new("ImageLabel")
+                    border.Name = "ImageLabel"
+                    border.Position = UDim2.fromOffset(-1, -1)
+                    border.Size = UDim2.new(1, 2, 1, 2)
+                    border.AutomaticSize = Enum.AutomaticSize.None
+                    border.BackgroundTransparency = 1
+                    border.Image = "http://www.roblox.com/asset/?id=79238657262784"
+                    border.ImageColor3 = Color3.fromRGB(255, 233, 217)
+                    border.ImageTransparency = 0
+                    border.ScaleType = Enum.ScaleType.Slice
+                    border.SliceCenter = Rect.new(3, 3, 17, 17)
+                    border.SliceScale = 1
+                    border.ZIndex = 10
+                    border.Parent = frame
+
+                    -- Native TipDisplay is parented directly to BackpackGui, not to the
+                    -- individual SlotMarker.  It is horizontally centered on the tool card
+                    -- and its top edge sits 30px above the native button's top edge.
+                    -- Parent first, then correct using AbsolutePosition so this stays exact
+                    -- regardless of BackpackGui.IgnoreGuiInset / top-bar inset differences.
+                    local target_center_x = button.AbsolutePosition.X + (button.AbsoluteSize.X / 2)
+                    local target_top_y = button.AbsolutePosition.Y - 30
+
+                    frame.Position = UDim2.fromOffset(target_center_x, target_top_y)
+                    frame.Parent = backpack_gui
+
+                    pcall(function()
+                        local actual_center_x = frame.AbsolutePosition.X + (frame.AbsoluteSize.X / 2)
+                        local actual_top_y = frame.AbsolutePosition.Y
+                        frame.Position = UDim2.fromOffset(
+                            frame.Position.X.Offset + (target_center_x - actual_center_x),
+                            frame.Position.Y.Offset + (target_top_y - actual_top_y)
+                        )
+                    end)
+
+                    extended_hotbar_tooltip = frame
+                end
+
+                local function extended_hotbar_destroy_from(main_frame, restore_clip)
+                    if not main_frame then
+                        return
+                    end
+
+                    for _, child in ipairs(main_frame:GetChildren()) do
+                        if child.Name:sub(1, #EXTENDED_HOTBAR_MARKER_PREFIX) == EXTENDED_HOTBAR_MARKER_PREFIX then
+                            pcall(function()
+                                child:Destroy()
+                            end)
+                        end
+                    end
+
+                    if restore_clip and extended_hotbar_original_clip[main_frame] ~= nil then
+                        pcall(function()
+                            main_frame.ClipsDescendants = extended_hotbar_original_clip[main_frame]
+                        end)
+                        extended_hotbar_original_clip[main_frame] = nil
+                    end
+                end
+
+                local function extended_hotbar_clear()
+                    extended_hotbar_hide_tooltip()
+                    extended_hotbar_extra_drag = nil
+
+                    if extended_hotbar_main then
+                        extended_hotbar_destroy_from(extended_hotbar_main, true)
+                    end
+
+                    local current = extended_hotbar_get_mainframe()
+                    if current and current ~= extended_hotbar_main then
+                        extended_hotbar_destroy_from(current, true)
+                    end
+
+                    extended_hotbar_main = nil
+                end
+
+                local function extended_hotbar_find_button_template(main_frame)
+                    local best = nil
+                    local best_x = -math.huge
+
+                    for _, child in ipairs(main_frame:GetChildren()) do
+                        if child:IsA("TextButton") then
+                            local slot_label = child:FindFirstChild("Slot", true)
+                            if slot_label and slot_label:IsA("TextLabel") then
+                                local x = child.AbsolutePosition.X
+                                if x > best_x then
+                                    best_x = x
+                                    best = child
+                                end
+                            end
+                        end
+                    end
+
+                    return best
+                end
+
+                local function extended_hotbar_find_markers(main_frame)
+                    local markers = {}
+
+                    for _, child in ipairs(main_frame:GetChildren()) do
+                        if child.Name == "SlotMarker" and child:IsA("ImageLabel") then
+                            markers[#markers + 1] = child
+                        end
+                    end
+
+                    table.sort(markers, function(a, b)
+                        local ax = a.AbsolutePosition.X
+                        local bx = b.AbsolutePosition.X
+
+                        if ax == bx then
+                            if a.Position.X.Scale == b.Position.X.Scale then
+                                return a.Position.X.Offset < b.Position.X.Offset
+                            end
+                            return a.Position.X.Scale < b.Position.X.Scale
+                        end
+
+                        return ax < bx
+                    end)
+
+                    return markers
+                end
+
+                local function extended_hotbar_get_step(markers, main_frame)
+                    -- IMPORTANT: when BackpackFrame closes, Rogue shrinks MainFrame from the
+                    -- 12-slot inventory width to the compact hotbar width. The hidden SlotMarker
+                    -- objects then compress with MainFrame (e.g. ~52px apart), but the ACTUAL
+                    -- visible native tool buttons are still laid out at the normal 72px cadence.
+                    --
+                    -- Therefore the native TextButtons are the authoritative spacing source.
+                    -- Use the smallest positive gap so missing/empty native slots (which create
+                    -- 144px/216px jumps) do not inflate the custom-slot spacing.
+                    if main_frame then
+                        local native_buttons = {}
+
+                        for _, child in ipairs(main_frame:GetChildren()) do
+                            if child:IsA("TextButton")
+                                and child.Name:sub(1, 17) ~= "HXDExtraHotbarBut"
+                            then
+                                native_buttons[#native_buttons + 1] = child
+                            end
+                        end
+
+                        table.sort(native_buttons, function(a, b)
+                            return a.AbsolutePosition.X < b.AbsolutePosition.X
+                        end)
+
+                        local best_delta = math.huge
+
+                        for i = 2, #native_buttons do
+                            local delta = native_buttons[i].AbsolutePosition.X
+                                - native_buttons[i - 1].AbsolutePosition.X
+
+                            if delta > 1 and delta < best_delta then
+                                best_delta = delta
+                            end
+                        end
+
+                        if best_delta < math.huge then
+                            return math.max(1, math.floor(best_delta + 0.5))
+                        end
+                    end
+
+                    -- Fallback for the very early startup frame before native buttons exist.
+                    -- In the open inventory state SlotMarkers have the same native cadence.
+                    if #markers >= 2 then
+                        local best_delta = math.huge
+
+                        for i = 2, #markers do
+                            local delta = markers[i].AbsolutePosition.X
+                                - markers[i - 1].AbsolutePosition.X
+
+                            if delta > 1 and delta < best_delta then
+                                best_delta = delta
+                            end
+                        end
+
+                        if best_delta < math.huge then
+                            return math.max(1, math.floor(best_delta + 0.5))
+                        end
+                    end
+
+                    -- Last-resort native dimensions: Rogue's card is 60px wide with roughly
+                    -- a 12px gap, so this preserves the observed 72px cadence until refresh.
+                    local last = markers[#markers]
+                    local width = last and last.AbsoluteSize.X or 60
+                    return math.max(1, math.floor(width + 12 + 0.5))
+                end
+
+                local function extended_hotbar_find_visual_source_button(main_frame, tool_name)
+                    tool_name = extended_hotbar_trim(tool_name)
+                    if tool_name == "" then
+                        return nil
+                    end
+
+                    -- Prefer the native INVENTORY card. That is the cleanest source for the
+                    -- little move-type diamond/triangle and does not inherit a transient
+                    -- equipped/selected state from a native hotbar card.
+                    local backpack_gui = extended_hotbar_get_backpack_gui()
+                    local backpack_frame = backpack_gui and FindFirstChild(backpack_gui, "BackpackFrame")
+                    local scrolling_frame = backpack_frame and FindFirstChild(backpack_frame, "ScrollingFrame")
+                    if scrolling_frame then
+                        -- This function runs from the 20 Hz visual watcher. Cache the real
+                        -- inventory card instead of rescanning every inventory descendant for
+                        -- every one of the three extra slots on every tick. Destroyed/rebuilt
+                        -- BackpackClient cards invalidate themselves through the checks below.
+                        local cached = extended_hotbar_inventory_visual_cache[tool_name]
+                        if cached
+                            and cached.Parent
+                            and cached:IsA("TextButton")
+                            and cached:IsDescendantOf(scrolling_frame)
+                            and extended_hotbar_trim(cached.Text) == tool_name
+                        then
+                            return cached
+                        end
+
+                        extended_hotbar_inventory_visual_cache[tool_name] = nil
+
+                        for _, object in ipairs(scrolling_frame:GetDescendants()) do
+                            if object:IsA("TextButton")
+                                and extended_hotbar_trim(object.Text) == tool_name
+                                and object.Name:sub(1, 17) ~= "HXDExtraHotbarBut"
+                            then
+                                extended_hotbar_inventory_visual_cache[tool_name] = object
+                                return object
+                            end
+                        end
+                    end
+
+                    -- Fallback for tools currently represented only on Rogue's native hotbar.
+                    if main_frame then
+                        for _, child in ipairs(main_frame:GetChildren()) do
+                            if child:IsA("TextButton")
+                                and child.Name:sub(1, 17) ~= "HXDExtraHotbarBut"
+                                and extended_hotbar_trim(child.Text) == tool_name
+                            then
+                                return child
+                            end
+                        end
+                    end
+
+                    return nil
+                end
+
+                local function extended_hotbar_copy_image_visual(target, source)
+                    if not target or not source or not target:IsA("ImageLabel") or not source:IsA("ImageLabel") then
+                        return
+                    end
+
+                    pcall(function() target.Image = source.Image end)
+                    pcall(function() target.ImageColor3 = source.ImageColor3 end)
+                    pcall(function() target.ImageTransparency = source.ImageTransparency end)
+                    pcall(function() target.ImageRectOffset = source.ImageRectOffset end)
+                    pcall(function() target.ImageRectSize = source.ImageRectSize end)
+                    pcall(function() target.ScaleType = source.ScaleType end)
+                    pcall(function() target.SliceCenter = source.SliceCenter end)
+                    pcall(function() target.SliceScale = source.SliceScale end)
+                end
+
+                local function extended_hotbar_sync_type_indicator(target_button, source_button)
+                    if not target_button or not target_button:IsA("TextButton") or not source_button then
+                        return
+                    end
+
+                    local source_overlay = source_button:FindFirstChild("Overlay")
+                    local target_overlay = target_button:FindFirstChild("Overlay")
+                    if not source_overlay or not target_overlay then
+                        return
+                    end
+
+                    -- The colored diamond under Rogue's tool cards lives in
+                    -- Overlay.TypeOutline / Overlay.TypeOutline.FillColor.  Slot.ImageLabel
+                    -- is the key-label decoration, so copying that (the old behavior) could
+                    -- never reliably update the red/blue/white move-type indicator.
+                    local source_outline = source_overlay:FindFirstChild("TypeOutline", true)
+                    local target_outline = target_overlay:FindFirstChild("TypeOutline", true)
+                    if source_outline and target_outline
+                        and source_outline:IsA("ImageLabel") and target_outline:IsA("ImageLabel")
+                    then
+                        extended_hotbar_copy_image_visual(target_outline, source_outline)
+
+                        local source_fill = source_outline:FindFirstChild("FillColor", true)
+                        local target_fill = target_outline:FindFirstChild("FillColor", true)
+                        if source_fill and target_fill
+                            and source_fill:IsA("ImageLabel") and target_fill:IsA("ImageLabel")
+                        then
+                            extended_hotbar_copy_image_visual(target_fill, source_fill)
+                        end
+                    end
+                end
+
+                local function extended_hotbar_apply_button(marker, template, index)
+                    local tool_name = extended_hotbar_get_tool_name(index)
+                    if tool_name == "" or not template then
+                        return
+                    end
+
+                    local button = template:Clone()
+                    button.Name = "HXDExtraHotbarButton" .. tostring(index)
+
+                    -- Cloned GUI objects do not clone event connections, but strip any
+                    -- script descendants anyway so the visual is entirely display-only.
+                    for _, descendant in ipairs(button:GetDescendants()) do
+                        if descendant:IsA("LocalScript") or descendant:IsA("Script") or descendant:IsA("ModuleScript") then
+                            descendant:Destroy()
+                        end
+                    end
+
+                    button.AnchorPoint = Vector2.new(0.5, 0.5)
+                    button.Position = UDim2.new(0.5, 0, 0.5, 0)
+                    button.Size = UDim2.fromOffset(
+                        template.AbsoluteSize.X > 0 and template.AbsoluteSize.X or 60,
+                        template.AbsoluteSize.Y > 0 and template.AbsoluteSize.Y or 60
+                    )
+                    button.Visible = true
+                    button.Active = true
+                    button.Selectable = false
+                    button.AutoButtonColor = false
+                    button.Text = tool_name
+
+                    -- Match Rogue's normal (UNEQUIPPED) native tool-button presentation.
+                    -- The template might itself be equipped when we clone it, so always
+                    -- normalize the custom slot instead of inheriting that transient state.
+                    button.BackgroundColor3 = Color3.fromRGB(215, 203, 191)
+                    button.BackgroundTransparency = 0
+                    button.TextTransparency = 0.2
+                    button.TextStrokeTransparency = 1
+                    button.TextSize = 13
+                    pcall(function()
+                        local face = button.FontFace
+                        button.FontFace = Font.new(face.Family, Enum.FontWeight.Regular, face.Style)
+                    end)
+
+                    local overlay = button:FindFirstChild("Overlay")
+                    if overlay and overlay:IsA("GuiObject") then
+                        -- Exact UNEQUIPPED native geometry from the earlier Rogue dump.
+                        overlay.Position = UDim2.new(0.5, 0, 0.5, 0)
+                        overlay.Size = UDim2.new(1, 6, 1, 6)
+                    end
+
+                    local slot_label = button:FindFirstChild("Slot", true)
+                    if slot_label and slot_label:IsA("TextLabel") then
+                        slot_label.Text = extended_hotbar_key_text(index)
+                    end
+
+                    local source_button = extended_hotbar_find_visual_source_button(
+                        marker.Parent,
+                        tool_name
+                    )
+                    extended_hotbar_sync_type_indicator(button, source_button)
+
+                    -- Keep the saved assignment, but make a disarmed/missing tool look like an
+                    -- actually empty extra slot.  The 0.05s visual watcher will automatically
+                    -- restore this same card when a Tool with the saved name returns.
+                    button.Visible = extended_hotbar_get_tool_instance(index) ~= nil
+
+                    button.Parent = marker
+
+                    if extended_hotbar_bind_extra_button then
+                        extended_hotbar_bind_extra_button(button, marker, index)
+                    end
+                end
+
+                local EXTENDED_HOTBAR_NORMAL_COOLDOWN = "HXDCooldownVisualizerOverlay"
+                local EXTENDED_HOTBAR_SNAP_COOLDOWN = "HXDSnapCooldownVisualizerOverlay"
+
+                local function extended_hotbar_remove_cooldown_overlay(button, name)
+                    local overlay = button and FindFirstChild(button, name)
+                    if overlay then
+                        pcall(function() overlay:Destroy() end)
+                    end
+                end
+
+                local function extended_hotbar_apply_cooldown_overlay(button, name, color, visual)
+                    local total = visual and tonumber(visual.duration) or 0
+                    local remaining = visual and tonumber(visual.remaining) or 0
+
+                    if not button or not button.Parent or total <= 0 or remaining <= 0 then
+                        extended_hotbar_remove_cooldown_overlay(button, name)
+                        return
+                    end
+
+                    local overlay = FindFirstChild(button, name)
+                    if not overlay or not overlay:IsA("Frame") then
+                        if overlay then
+                            pcall(function() overlay:Destroy() end)
+                        end
+
+                        overlay = Instance.new("Frame")
+                        overlay.Name = name
+                        overlay.AnchorPoint = Vector2.new(0, 1)
+                        overlay.Position = UDim2.fromScale(0, 1)
+                        overlay.BackgroundColor3 = color
+                        overlay.BackgroundTransparency = 0.45
+                        overlay.BorderSizePixel = 0
+                        overlay.Parent = button
+                    end
+
+                    overlay.ZIndex = button.ZIndex + 10
+                    overlay.BackgroundColor3 = color
+                    overlay.Size = UDim2.fromScale(1, math.clamp(remaining / total, 0, 1))
+                end
+
+                local function extended_hotbar_sync_cooldown_visuals(index, button, tool_available)
+                    if not button then
+                        return
+                    end
+
+                    if not tool_available then
+                        extended_hotbar_remove_cooldown_overlay(button, EXTENDED_HOTBAR_NORMAL_COOLDOWN)
+                        extended_hotbar_remove_cooldown_overlay(button, EXTENDED_HOTBAR_SNAP_COOLDOWN)
+                        return
+                    end
+
+                    local api = cheat_client and cheat_client.cooldown_visualizer
+                    local visuals = nil
+                    if api and api.get_active_visuals then
+                        local ok, result = pcall(api.get_active_visuals, extended_hotbar_get_tool_name(index))
+                        if ok then
+                            visuals = result
+                        end
+                    end
+
+                    extended_hotbar_apply_cooldown_overlay(
+                        button,
+                        EXTENDED_HOTBAR_NORMAL_COOLDOWN,
+                        Color3.fromRGB(255, 35, 35),
+                        visuals and visuals.normal or nil
+                    )
+
+                    extended_hotbar_apply_cooldown_overlay(
+                        button,
+                        EXTENDED_HOTBAR_SNAP_COOLDOWN,
+                        Color3.fromRGB(80, 140, 255),
+                        visuals and visuals.snap or nil
+                    )
+                end
+
+                -- Native-state dump showed the selected look is brighter parchment plus a
+                -- slightly enlarged Overlay (+6 -> +10) shifted upward by 1px.  The 60x60
+                -- TextButton itself stays centered inside the extension SlotMarker.
+                local function extended_hotbar_is_equipped(index)
+                    local tool_name = extended_hotbar_get_tool_name(index)
+                    if tool_name == "" then
+                        return false
+                    end
+
+                    local character = plr.Character
+                    if not character then
+                        return false
+                    end
+
+                    local exact = FindFirstChild(character, tool_name)
+                    if exact and exact:IsA("Tool") then
+                        return true
+                    end
+
+                    local wanted = string.lower(tool_name)
+                    for _, object in ipairs(character:GetChildren()) do
+                        if object:IsA("Tool") and string.lower(object.Name) == wanted then
+                            return true
+                        end
+                    end
+
+                    return false
+                end
+
+                local function extended_hotbar_set_selected_visual(index, selected)
+                    local main_frame = extended_hotbar_get_mainframe()
+                    if not main_frame then
+                        return
+                    end
+
+                    local marker = FindFirstChild(main_frame, EXTENDED_HOTBAR_MARKER_PREFIX .. tostring(index))
+                    if not marker then
+                        return
+                    end
+
+                    local button = FindFirstChild(marker, "HXDExtraHotbarButton" .. tostring(index))
+                    if not button or not button:IsA("TextButton") then
+                        return
+                    end
+
+                    local tool_available = extended_hotbar_get_tool_instance(index) ~= nil
+                    button.Visible = tool_available
+                    if not tool_available then
+                        extended_hotbar_sync_cooldown_visuals(index, button, false)
+                        return
+                    end
+
+                    -- Refresh the move-type diamond from Rogue's real inventory/native card.
+                    -- This also catches cards the game rebuilds after disarm/re-equip.
+                    local source_button = extended_hotbar_find_visual_source_button(
+                        main_frame,
+                        extended_hotbar_get_tool_name(index)
+                    )
+                    extended_hotbar_sync_type_indicator(button, source_button)
+
+                    -- Keep custom slots centered inside their SlotMarker. During an intentional
+                    -- mouse drag, leave Position alone so the card can follow the cursor.
+                    local dragging_this_slot = extended_hotbar_extra_drag
+                        and extended_hotbar_extra_drag.index == index
+                        and extended_hotbar_extra_drag.moved
+                    if not dragging_this_slot then
+                        button.Position = UDim2.new(0.5, 0, 0.5, 0)
+                    end
+                    if selected then
+                        button.BackgroundColor3 = Color3.fromRGB(255, 248, 238)
+                        button.TextTransparency = 0
+                    else
+                        button.BackgroundColor3 = Color3.fromRGB(215, 203, 191)
+                        button.TextTransparency = 0.2
+                    end
+
+                    -- Keep the custom name exactly on the native regular face in both states.
+                    button.TextStrokeTransparency = 1
+                    button.TextSize = 13
+                    pcall(function()
+                        local face = button.FontFace
+                        button.FontFace = Font.new(face.Family, Enum.FontWeight.Regular, face.Style)
+                    end)
+
+                    local overlay = button:FindFirstChild("Overlay")
+                    if overlay and overlay:IsA("GuiObject") then
+                        if selected then
+                            -- Exact SELECTED geometry from Rogue's native dump: the card itself
+                            -- stays 60x60, while its parchment overlay grows from +6 to +10 and
+                            -- shifts upward by 1px. This is the subtle native "enlarge" effect.
+                            overlay.Position = UDim2.new(0.5, 0, 0.5, -1)
+                            overlay.Size = UDim2.new(1, 10, 1, 10)
+                        else
+                            overlay.Position = UDim2.new(0.5, 0, 0.5, 0)
+                            overlay.Size = UDim2.new(1, 6, 1, 6)
+                        end
+                    end
+
+                    extended_hotbar_sync_cooldown_visuals(index, button, true)
+                end
+
+                local function extended_hotbar_update_selected_visuals()
+                    local visible_slot_count = extended_hotbar_slot_count()
+                    for index = 1, visible_slot_count do
+                        extended_hotbar_set_selected_visual(index, extended_hotbar_is_equipped(index))
+                    end
+                end
+
+                extended_hotbar_refresh = function()
+                    if extended_hotbar_refresh_busy then
+                        return
+                    end
+
+                    extended_hotbar_refresh_busy = true
+                    -- TipDisplay is parented to BackpackGui like Rogue's native tooltip,
+                    -- so explicitly remove it before rebuilding/destroying slot markers.
+                    extended_hotbar_hide_tooltip()
+
+                    pcall(function()
+                        local visible_slot_count = extended_hotbar_slot_count()
+                        if visible_slot_count <= 0 then
+                            extended_hotbar_clear()
+                            return
+                        end
+
+                        local main_frame = extended_hotbar_get_mainframe()
+                        if not main_frame then
+                            extended_hotbar_clear()
+                            return
+                        end
+
+                        -- Remove our previous render without touching Rogue's twelve native markers.
+                        if extended_hotbar_main and extended_hotbar_main ~= main_frame then
+                            extended_hotbar_destroy_from(extended_hotbar_main, true)
+                        end
+                        extended_hotbar_destroy_from(main_frame, false)
+                        extended_hotbar_main = main_frame
+
+                        -- Our three clones intentionally extend beyond MainFrame's native width.
+                        -- Preserve Rogue's original clipping state and temporarily disable clipping
+                        -- so those right-side slots remain visible even if the game enables it.
+                        if extended_hotbar_original_clip[main_frame] == nil then
+                            extended_hotbar_original_clip[main_frame] = main_frame.ClipsDescendants
+                        end
+                        main_frame.ClipsDescendants = false
+
+                        local markers = extended_hotbar_find_markers(main_frame)
+                        if #markers == 0 then
+                            return
+                        end
+
+                        local marker_template = markers[#markers]
+                        local button_template = extended_hotbar_find_button_template(main_frame)
+                        local step = extended_hotbar_get_step(markers, main_frame)
+
+                        -- BackpackClient may resize MainFrame after our first render. Remember
+                        -- the native marker spacing used for this render so the existing watchdog
+                        -- can rebuild the extension as soon as the real native layout settles.
+                        pcall(function()
+                            main_frame:SetAttribute("HXDExtraHotbarRenderedStep", step)
+                        end)
+
+                        -- The native MainFrame ends at the center of its right-most SlotMarker.
+                        -- Offsetting by the measured marker-to-marker spacing extends only rightward;
+                        -- the original hotbar size/positions are never changed or stretched.
+                        for index = 1, visible_slot_count do
+                            local marker = marker_template:Clone()
+                            marker.Name = EXTENDED_HOTBAR_MARKER_PREFIX .. tostring(index)
+                            marker.Position = UDim2.new(
+                                marker_template.Position.X.Scale,
+                                marker_template.Position.X.Offset + (step * index),
+                                marker_template.Position.Y.Scale,
+                                marker_template.Position.Y.Offset
+                            )
+                            marker.Visible = true
+                            marker.ClipsDescendants = false
+                            marker.Parent = main_frame
+
+                            extended_hotbar_apply_button(marker, button_template, index)
+                        end
+                    end)
+
+                    extended_hotbar_refresh_busy = false
+                    extended_hotbar_update_selected_visuals()
+                end
+
+                local function extended_hotbar_find_tool(tool_name)
+                    tool_name = extended_hotbar_trim(tool_name)
+                    if tool_name == "" then
+                        return nil
+                    end
+
+                    local character = plr.Character
+                    local backpack = plr:FindFirstChildOfClass("Backpack") or FindFirstChild(plr, "Backpack")
+
+                    local function exact(container)
+                        if not container then
+                            return nil
+                        end
+
+                        local object = FindFirstChild(container, tool_name)
+                        if object and object:IsA("Tool") then
+                            return object
+                        end
+
+                        return nil
+                    end
+
+                    local tool = exact(character) or exact(backpack)
+                    if tool then
+                        return tool
+                    end
+
+                    -- Friendly fallback for capitalization differences in saved configs.
+                    local wanted = string.lower(tool_name)
+                    for _, container in ipairs({character, backpack}) do
+                        if container then
+                            for _, object in ipairs(container:GetChildren()) do
+                                if object:IsA("Tool") and string.lower(object.Name) == wanted then
+                                    return object
+                                end
+                            end
+                        end
+                    end
+
+                    return nil
+                end
+
+                extended_hotbar_equip = function(index)
+                    local visible_slot_count = extended_hotbar_slot_count()
+                    if visible_slot_count <= 0 or index > visible_slot_count or (shared and shared.is_unloading) then
+                        return
+                    end
+
+                    if uis:GetFocusedTextBox() then
+                        return
+                    end
+
+                    local tool_name = extended_hotbar_get_tool_name(index)
+                    if tool_name == "" then
+                        return
+                    end
+
+                    local character = plr.Character
+                    local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
+                    if not character or not humanoid or humanoid.Health <= 0 then
+                        return
+                    end
+
+                    local tool = extended_hotbar_find_tool(tool_name)
+                    if not tool then
+                        return
+                    end
+
+                    if tool.Parent == character then
+                        -- Match the native hotbar's toggle-like behavior when the bound tool
+                        -- is already equipped.
+                        pcall(function()
+                            humanoid:UnequipTools()
+                        end)
+                    else
+                        pcall(function()
+                            humanoid:EquipTool(tool)
+                        end)
+                    end
+                end
+
+                local function extended_hotbar_clear_assignment(index, notify)
+                    if not index or index < 1 or index > EXTENDED_HOTBAR_SLOT_COUNT then
+                        return
+                    end
+
+                    extended_hotbar_hide_tooltip()
+                    extended_hotbar_store_tool_name(index, "")
+                    extended_hotbar_refresh()
+
+                end
+
+                local function extended_hotbar_swap_assignments(source_index, target_index)
+                    if not source_index or not target_index
+                        or source_index < 1 or source_index > EXTENDED_HOTBAR_SLOT_COUNT
+                        or target_index < 1 or target_index > EXTENDED_HOTBAR_SLOT_COUNT
+                        or source_index == target_index
+                    then
+                        return false
+                    end
+
+                    local source_field = extended_hotbar_tool_field(source_index)
+                    local target_field = extended_hotbar_tool_field(target_index)
+                    local source_tool = extended_hotbar_trim(cheat_client.config[source_field])
+                    local target_tool = extended_hotbar_trim(cheat_client.config[target_field])
+
+                    extended_hotbar_store_tool_name(source_index, target_tool)
+                    extended_hotbar_store_tool_name(target_index, source_tool)
+                    extended_hotbar_refresh()
+                    return true
+                end
+
+                -- Mouse interaction for the three extension cards:
+                --   click = equip/unequip
+                --   drag (Backpack open only) = swap with another extension move or drag out/up to clear
+                --   hover = native-styled Tool.ToolTip popup
+                extended_hotbar_bind_extra_button = function(button, marker, index)
+                    if not button or not marker then
+                        return
+                    end
+
+                    local mouse_down_connection = button.MouseButton1Down:Connect(function()
+                        if (shared and shared.is_unloading) or uis:GetFocusedTextBox() then
+                            return
+                        end
+
+                        extended_hotbar_hide_tooltip()
+                        extended_hotbar_drag_tool_name = nil
+
+                        local start = Vector2.new(mouse.X, mouse.Y)
+                        extended_hotbar_extra_drag = {
+                            index = index,
+                            button = button,
+                            marker = marker,
+                            start = start,
+                            moved = false,
+
+                            -- Clicking always works, but the card itself may only be dragged
+                            -- while Rogue's Backpack UI is open.
+                            can_drag = extended_hotbar_backpack_open(),
+                        }
+                    end)
+
+                    local enter_connection = button.MouseEnter:Connect(function()
+                        if extended_hotbar_extra_drag or not button.Parent or not marker.Parent then
+                            return
+                        end
+
+                        -- Show immediately on hover. Rogue normally waits briefly before
+                        -- creating TipDisplay, but the extended slots intentionally have no delay.
+                        extended_hotbar_hover_serial += 1
+                        extended_hotbar_show_tooltip(index, marker, button)
+                    end)
+
+                    local leave_connection = button.MouseLeave:Connect(function()
+                        extended_hotbar_hide_tooltip()
+                    end)
+
+                    if shared and shared.connections then
+                        shared.connections[#shared.connections + 1] = mouse_down_connection
+                        shared.connections[#shared.connections + 1] = enter_connection
+                        shared.connections[#shared.connections + 1] = leave_connection
+                    end
+                end
+
+                -- Drag/drop assignment state. Tool names are mirrored into invisible SaveManager
+                -- Input options, so each normal config remembers its own three assignments without
+                -- exposing manual tool-name textboxes.
+                extended_hotbar_drag_tool_name = nil
+
+                local function extended_hotbar_point_in_gui(gui_object, x, y)
+                    if not gui_object or not gui_object:IsA("GuiObject") or not gui_object.Visible then
+                        return false
+                    end
+
+                    local p = gui_object.AbsolutePosition
+                    local z = gui_object.AbsoluteSize
+                    return x >= p.X and x <= (p.X + z.X) and y >= p.Y and y <= (p.Y + z.Y)
+                end
+
+                local function extended_hotbar_slot_at_position(x, y)
+                    local main_frame = extended_hotbar_get_mainframe()
+                    if not main_frame then
+                        return nil
+                    end
+
+                    local visible_slot_count = extended_hotbar_slot_count()
+                    for index = 1, visible_slot_count do
+                        local marker = FindFirstChild(main_frame, EXTENDED_HOTBAR_MARKER_PREFIX .. tostring(index))
+                        if marker and extended_hotbar_point_in_gui(marker, x, y) then
+                            return index
+                        end
+                    end
+
+                    return nil
+                end
+
+                local function extended_hotbar_tool_from_inventory_button(button)
+                    if not button or not button:IsA("TextButton") then
+                        return nil
+                    end
+
+                    local candidates = {}
+                    local function add_candidate(value)
+                        value = extended_hotbar_trim(value)
+                        if value ~= "" and not table.find(candidates, value) then
+                            candidates[#candidates + 1] = value
+                        end
+                    end
+
+                    add_candidate(button.Text)
+                    add_candidate(button.Name)
+                    add_candidate((button.Name or ""):gsub("^%d+", ""))
+
+                    local backpack = plr:FindFirstChildOfClass("Backpack") or FindFirstChild(plr, "Backpack")
+                    local character = plr.Character
+
+                    for _, candidate in ipairs(candidates) do
+                        local wanted = string.lower(candidate)
+                        for _, container in ipairs({backpack, character}) do
+                            if container then
+                                for _, object in ipairs(container:GetChildren()) do
+                                    if object:IsA("Tool") and string.lower(object.Name) == wanted then
+                                        return object.Name
+                                    end
+                                end
+                            end
+                        end
+                    end
+
+                    -- The visible button text is normally the exact Tool.Name. Keep it as a
+                    -- fallback so unusual inventory entries can still be assigned.
+                    return candidates[1]
+                end
+
+                local function extended_hotbar_inventory_button_at_position(x, y)
+                    local player_gui = plr and FindFirstChild(plr, "PlayerGui")
+                    local backpack_gui = player_gui and FindFirstChild(player_gui, "BackpackGui")
+                    local backpack_frame = backpack_gui and FindFirstChild(backpack_gui, "BackpackFrame")
+                    local scrolling_frame = backpack_frame and FindFirstChild(backpack_frame, "ScrollingFrame")
+                    if not player_gui or not scrolling_frame then
+                        return nil
+                    end
+
+                    local ok, gui_objects = pcall(function()
+                        return player_gui:GetGuiObjectsAtPosition(x, y)
+                    end)
+                    if not ok or type(gui_objects) ~= "table" then
+                        return nil
+                    end
+
+                    for _, object in ipairs(gui_objects) do
+                        local current = object
+                        while current and current ~= scrolling_frame do
+                            if current:IsA("TextButton") and current:IsDescendantOf(scrolling_frame) then
+                                return current
+                            end
+                            current = current.Parent
+                        end
+                    end
+
+                    return nil
+                end
+
+                local function extended_hotbar_assign(index, tool_name)
+                    if not index or index < 1 or index > EXTENDED_HOTBAR_SLOT_COUNT then
+                        return
+                    end
+
+                    tool_name = extended_hotbar_trim(tool_name)
+                    if tool_name == "" then
+                        return
+                    end
+
+                    extended_hotbar_store_tool_name(index, tool_name)
+                    extended_hotbar_refresh()
+                end
+
+                group_exploits:AddSlider("extended_hotbar_slots", {
+                    Text = "Extended Hotbar Slots",
+                    Default = cheat_client.config.extended_hotbar_slots or 0,
+                    Min = 0,
+                    Max = EXTENDED_HOTBAR_SLOT_COUNT,
+                    Rounding = 0,
+                    Tooltip = "0 hides the extension. Drag an inventory tool onto an extra slot to assign it. Click a slot to equip/unequip. While the Backpack is open, drag extra-slot moves onto each other to swap them or drag one out/up to clear it.",
+                    Callback = function(value)
+                        cheat_client.config.extended_hotbar_slots = math.clamp(math.floor((tonumber(value) or 0) + 0.5), 0, EXTENDED_HOTBAR_SLOT_COUNT)
+                        extended_hotbar_refresh()
+                    end
+                })
+
+                for index = 1, EXTENDED_HOTBAR_SLOT_COUNT do
+                    local slot_index = index
+                    local key_field = extended_hotbar_key_field(slot_index)
+                    local key_id = "ExtendedHotbarKey" .. tostring(slot_index)
+
+                    group_exploits:AddLabel("Extra Slot " .. tostring(slot_index) .. " Keybind"):AddKeyPicker(key_id, {
+                        Default = cheat_client.config[key_field] or "None",
+                        Mode = "Press",
+                        Text = "Extra Slot " .. tostring(slot_index),
+                        NoUI = true,
+                        Callback = function()
+                            extended_hotbar_equip(slot_index)
+                        end
+                    })
+
+                    if Options[key_id] then
+                        Options[key_id]:OnChanged(function()
+                            cheat_client.config[key_field] = Options[key_id].Value
+                            extended_hotbar_refresh()
+                        end)
+                    end
+                end
+
+                -- Robust native-inventory drag capture.
+                --
+                -- V4 tried to discover the inventory TextButton with a single mouse-position
+                -- query on UserInputService.InputBegan. Rogue's BackpackClient can begin/move its
+                -- drag UI in the same input frame, so that one-shot hit test is not dependable.
+                -- Instead, bind directly to every actual inventory TextButton. That records the
+                -- Tool.Name before BackpackClient gets a chance to reparent/move its drag visual.
+                local extended_hotbar_bound_inventory_buttons = setmetatable({}, {__mode = "k"})
+
+                local function extended_hotbar_get_scrolling_frame()
+                    local player_gui = plr and FindFirstChild(plr, "PlayerGui")
+                    local backpack_gui = player_gui and FindFirstChild(player_gui, "BackpackGui")
+                    local backpack_frame = backpack_gui and FindFirstChild(backpack_gui, "BackpackFrame")
+                    return backpack_frame and FindFirstChild(backpack_frame, "ScrollingFrame") or nil
+                end
+
+                local function extended_hotbar_capture_inventory_button(button)
+                    if (shared and shared.is_unloading)
+                        or extended_hotbar_slot_count() <= 0
+                        or not extended_hotbar_backpack_open()
+                    then
+                        return
+                    end
+
+                    local tool_name = extended_hotbar_tool_from_inventory_button(button)
+                    if tool_name and tool_name ~= "" then
+                        extended_hotbar_drag_tool_name = tool_name
+                    end
+                end
+
+                local function extended_hotbar_bind_inventory_button(button)
+                    if not button or not button:IsA("TextButton") or extended_hotbar_bound_inventory_buttons[button] then
+                        return
+                    end
+
+                    local scrolling_frame = extended_hotbar_get_scrolling_frame()
+                    if not scrolling_frame or not button:IsDescendantOf(scrolling_frame) then
+                        return
+                    end
+
+                    extended_hotbar_bound_inventory_buttons[button] = true
+
+                    local mouse_down_connection = button.MouseButton1Down:Connect(function()
+                        extended_hotbar_capture_inventory_button(button)
+                    end)
+
+                    -- InputBegan is kept as a second path because some executor/UI combinations
+                    -- do not deliver MouseButton1Down while another GUI is capturing input.
+                    local input_began_connection = button.InputBegan:Connect(function(input)
+                        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                            extended_hotbar_capture_inventory_button(button)
+                        end
+                    end)
+
+                    if shared and shared.connections then
+                        shared.connections[#shared.connections + 1] = mouse_down_connection
+                        shared.connections[#shared.connections + 1] = input_began_connection
+                    end
+                end
+
+                local function extended_hotbar_bind_inventory_buttons()
+                    local scrolling_frame = extended_hotbar_get_scrolling_frame()
+                    if not scrolling_frame then
+                        return
+                    end
+
+                    for _, object in ipairs(scrolling_frame:GetDescendants()) do
+                        if object:IsA("TextButton") then
+                            extended_hotbar_bind_inventory_button(object)
+                        end
+                    end
+                end
+
+                -- There are two mouse coordinate spaces in play depending on ScreenGui inset
+                -- settings. Test InputObject.Position, UIS:GetMouseLocation(), PlayerMouse and
+                -- +/- GuiInset so a visually-correct drop lands even when BackpackGui and the
+                -- executor menu use different IgnoreGuiInset settings.
+                local function extended_hotbar_release_points(input)
+                    local points = {}
+                    local seen = {}
+
+                    local function add_point(x, y)
+                        x, y = tonumber(x), tonumber(y)
+                        if not x or not y then return end
+                        local key = tostring(math.floor(x + 0.5)) .. ":" .. tostring(math.floor(y + 0.5))
+                        if not seen[key] then
+                            seen[key] = true
+                            points[#points + 1] = Vector2.new(x, y)
+                        end
+                    end
+
+                    pcall(function()
+                        if input and input.Position then
+                            add_point(input.Position.X, input.Position.Y)
+                        end
+                    end)
+
+                    pcall(function()
+                        local p = uis:GetMouseLocation()
+                        add_point(p.X, p.Y)
+                    end)
+
+                    pcall(function()
+                        add_point(mouse.X, mouse.Y)
+                    end)
+
+                    local inset = Vector2.zero
+                    pcall(function()
+                        local top_left = gui:GetGuiInset()
+                        if typeof(top_left) == "Vector2" then
+                            inset = top_left
+                        end
+                    end)
+
+                    local initial_count = #points
+                    if inset.Magnitude > 0 then
+                        for i = 1, initial_count do
+                            local p = points[i]
+                            add_point(p.X - inset.X, p.Y - inset.Y)
+                            add_point(p.X + inset.X, p.Y + inset.Y)
+                        end
+                    end
+
+                    return points
+                end
+
+                local function extended_hotbar_slot_from_release(input)
+                    local points = extended_hotbar_release_points(input)
+                    local main_frame = extended_hotbar_get_mainframe()
+                    if not main_frame then
+                        return nil
+                    end
+
+                    local visible_slot_count = extended_hotbar_slot_count()
+                    for index = 1, visible_slot_count do
+                        local marker = FindFirstChild(main_frame, EXTENDED_HOTBAR_MARKER_PREFIX .. tostring(index))
+                        if marker and marker:IsA("GuiObject") and marker.Visible then
+                            local p = marker.AbsolutePosition
+                            local z = marker.AbsoluteSize
+                            -- Small forgiveness around the 60x61 parchment border makes dropping
+                            -- on its decorative edge behave like dropping in the center.
+                            local pad = 8
+
+                            for _, point in ipairs(points) do
+                                if point.X >= (p.X - pad)
+                                    and point.X <= (p.X + z.X + pad)
+                                    and point.Y >= (p.Y - pad)
+                                    and point.Y <= (p.Y + z.Y + pad)
+                                then
+                                    return index
+                                end
+                            end
+                        end
+                    end
+
+                    return nil
+                end
+
+                local function extended_hotbar_release_inside_hotbar(input)
+                    local main_frame = extended_hotbar_get_mainframe()
+                    if not main_frame then
+                        return false
+                    end
+
+                    local points = extended_hotbar_release_points(input)
+
+                    -- Native 12-slot strip.
+                    if main_frame.Visible then
+                        local p = main_frame.AbsolutePosition
+                        local z = main_frame.AbsoluteSize
+                        for _, point in ipairs(points) do
+                            if point.X >= p.X and point.X <= (p.X + z.X)
+                                and point.Y >= p.Y and point.Y <= (p.Y + z.Y)
+                            then
+                                return true
+                            end
+                        end
+                    end
+
+                    -- Extension markers live outside MainFrame's native width.
+                    local visible_slot_count = extended_hotbar_slot_count()
+                    for index = 1, visible_slot_count do
+                        local marker = FindFirstChild(main_frame, EXTENDED_HOTBAR_MARKER_PREFIX .. tostring(index))
+                        if marker and marker:IsA("GuiObject") and marker.Visible then
+                            local p = marker.AbsolutePosition
+                            local z = marker.AbsoluteSize
+                            for _, point in ipairs(points) do
+                                if point.X >= p.X and point.X <= (p.X + z.X)
+                                    and point.Y >= p.Y and point.Y <= (p.Y + z.Y)
+                                then
+                                    return true
+                                end
+                            end
+                        end
+                    end
+
+                    return false
+                end
+
+                -- Fallback capture for inventory buttons created on the exact frame a drag starts.
+                -- Direct per-button hooks above are the primary path; this only fills timing gaps.
+                local extended_hotbar_drag_began_connection = uis.InputBegan:Connect(function(input)
+                    if (shared and shared.is_unloading) or extended_hotbar_slot_count() <= 0 then
+                        return
+                    end
+                    if input.UserInputType ~= Enum.UserInputType.MouseButton1 or uis:GetFocusedTextBox() then
+                        return
+                    end
+
+                    extended_hotbar_bind_inventory_buttons()
+
+                    if not extended_hotbar_drag_tool_name then
+                        local points = {}
+                        pcall(function()
+                            points[#points + 1] = uis:GetMouseLocation()
+                        end)
+                        pcall(function()
+                            points[#points + 1] = Vector2.new(mouse.X, mouse.Y)
+                        end)
+
+                        for _, point in ipairs(points) do
+                            local inventory_button = extended_hotbar_inventory_button_at_position(point.X, point.Y)
+                            if inventory_button then
+                                extended_hotbar_capture_inventory_button(inventory_button)
+                                break
+                            end
+                        end
+                    end
+                end)
+
+                local extended_hotbar_extra_drag_changed_connection = uis.InputChanged:Connect(function(input)
+                    local drag = extended_hotbar_extra_drag
+                    if not drag or input.UserInputType ~= Enum.UserInputType.MouseMovement then
+                        return
+                    end
+
+                    if not drag.can_drag or not extended_hotbar_backpack_open() then
+                        return
+                    end
+
+                    local current = Vector2.new(mouse.X, mouse.Y)
+                    -- Keep normal mouse clicks from becoming accidental drags.  The old
+                    -- 6px threshold was far too sensitive; require a deliberate pull before
+                    -- the card detaches and can be returned to inventory/cleared.
+                    local EXTRA_SLOT_DRAG_THRESHOLD = 15
+                    if not drag.moved and (current - drag.start).Magnitude >= EXTRA_SLOT_DRAG_THRESHOLD then
+                        drag.moved = true
+                        extended_hotbar_hide_tooltip()
+                    end
+
+                    if drag.moved and drag.button and drag.button.Parent and drag.marker and drag.marker.Parent then
+                        -- Position is relative to the SlotMarker; AnchorPoint is 0.5/0.5, so
+                        -- assigning the cursor's local coordinate makes the parchment follow it.
+                        local local_x = current.X - drag.marker.AbsolutePosition.X
+                        local local_y = current.Y - drag.marker.AbsolutePosition.Y
+                        drag.button.Position = UDim2.fromOffset(local_x, local_y)
+                        drag.button.ZIndex = 30
+                    end
+                end)
+
+                local extended_hotbar_drag_ended_connection = uis.InputEnded:Connect(function(input)
+                    if input.UserInputType ~= Enum.UserInputType.MouseButton1 then
+                        return
+                    end
+
+                    -- Extra-slot click/drag path. A short stationary press behaves like a
+                    -- normal hotbar click. A real drag dropped outside the full hotbar clears
+                    -- that extension slot, matching Rogue's "drag out to remove" convention.
+                    local extra_drag = extended_hotbar_extra_drag
+                    if extra_drag then
+                        extended_hotbar_extra_drag = nil
+                        extended_hotbar_drag_tool_name = nil
+
+                        if extra_drag.button and extra_drag.button.Parent then
+                            extra_drag.button.Position = UDim2.new(0.5, 0, 0.5, 0)
+                            extra_drag.button.ZIndex = 1
+                        end
+
+                        if extra_drag.moved and extra_drag.can_drag then
+                            local target_index = extended_hotbar_slot_from_release(input)
+
+                            -- Reorder only the three extended move slots. Dropping on another
+                            -- extra slot swaps the two tool assignments; their Z/X/C/etc keybinds
+                            -- remain attached to the slot positions.
+                            if target_index and target_index ~= extra_drag.index then
+                                extended_hotbar_swap_assignments(extra_drag.index, target_index)
+                            else
+                                -- Returning an extension tool upward toward the inventory should not
+                                -- require pulling the cursor all the way past the 60px hotbar frame.
+                                local current = Vector2.new(mouse.X, mouse.Y)
+                                local delta = current - extra_drag.start
+                                local vertical_return = delta.Y <= -15 and (-delta.Y) >= math.abs(delta.X)
+
+                                if vertical_return or not extended_hotbar_release_inside_hotbar(input) then
+                                    extended_hotbar_clear_assignment(extra_drag.index, true)
+                                else
+                                    extended_hotbar_update_selected_visuals()
+                                end
+                            end
+                        else
+                            -- When BackpackFrame is closed, mouse movement never becomes a drag;
+                            -- releasing still behaves as a normal hotbar click.
+                            extended_hotbar_equip(extra_drag.index)
+                            task.defer(extended_hotbar_update_selected_visuals)
+                        end
+
+                        return
+                    end
+
+                    -- Native inventory -> extension assignment path.
+                    local tool_name = extended_hotbar_drag_tool_name
+                    extended_hotbar_drag_tool_name = nil
+
+                    if not tool_name or extended_hotbar_slot_count() <= 0 or (shared and shared.is_unloading) then
+                        return
+                    end
+
+                    local slot_index = extended_hotbar_slot_from_release(input)
+                    if slot_index then
+                        extended_hotbar_assign(slot_index, tool_name)
+                    end
+                end)
+
+                if shared and shared.connections then
+                    shared.connections[#shared.connections + 1] = extended_hotbar_drag_began_connection
+                    shared.connections[#shared.connections + 1] = extended_hotbar_extra_drag_changed_connection
+                    shared.connections[#shared.connections + 1] = extended_hotbar_drag_ended_connection
+                end
+
+                -- Inventory entries are rebuilt as tools move between Backpack/Character and on
+                -- respawn, so periodically bind any newly-created TextButtons. This does not poll
+                -- or alter tools; it only attaches the two lightweight mouse listeners once.
+                task.spawn(function()
+                    while shared and not shared.is_unloading do
+                        if extended_hotbar_slot_count() > 0 then
+                            extended_hotbar_bind_inventory_buttons()
+                        end
+                        task.wait(0.35)
+                    end
+                end)
+
+                group_exploits:AddDivider()
+
+                -- BackpackGui can be recreated on respawn/server transitions. This tiny
+                -- watchdog only rebuilds if the currently requested marker clones are missing; it does not
+                -- touch or reposition the native hotbar during normal operation.
+                task.spawn(function()
+                    while shared and not shared.is_unloading do
+                        local visible_slot_count = extended_hotbar_slot_count()
+                        if visible_slot_count > 0 then
+                            local main_frame = extended_hotbar_get_mainframe()
+                            local missing = main_frame == nil
+
+                            if main_frame then
+                                for index = 1, visible_slot_count do
+                                    local marker = FindFirstChild(main_frame, EXTENDED_HOTBAR_MARKER_PREFIX .. tostring(index))
+                                    if not marker then
+                                        missing = true
+                                        break
+                                    end
+
+                                    if extended_hotbar_get_tool_name(index) ~= ""
+                                        and not marker:FindFirstChild("HXDExtraHotbarButton" .. tostring(index))
+                                        and extended_hotbar_find_button_template(main_frame)
+                                    then
+                                        missing = true
+                                        break
+                                    end
+                                end
+                            end
+
+                            -- MainFrame/SlotMarker geometry is not always final when Heya first
+                            -- executes. If Rogue later resizes the native hotbar, refresh even
+                            -- though all three custom markers technically still exist. This is
+                            -- the startup case that made the blank slots bunch together until a
+                            -- manual drag/drop happened.
+                            if not missing and main_frame then
+                                local native_markers = extended_hotbar_find_markers(main_frame)
+                                if #native_markers >= 2 then
+                                    local current_step = extended_hotbar_get_step(native_markers, main_frame)
+                                    local rendered_step = tonumber(main_frame:GetAttribute("HXDExtraHotbarRenderedStep"))
+                                    if not rendered_step or math.abs(current_step - rendered_step) >= 1 then
+                                        missing = true
+                                    end
+                                end
+                            end
+
+                            if missing or main_frame ~= extended_hotbar_main then
+                                extended_hotbar_refresh()
+                            end
+                        elseif extended_hotbar_main then
+                            extended_hotbar_clear()
+                        end
+
+                        task.wait(0.75)
+                    end
+
+                    extended_hotbar_clear()
+                end)
+
+                -- Fast visual watcher. This catches equip/unequip/disarm through ANY path and
+                -- mirrors both Rogue's selected presentation and Cooldown Visualizer state onto
+                -- the three extension cards. Indicator source lookup is cached to keep this cheap.
+                task.spawn(function()
+                    while shared and not shared.is_unloading do
+                        if extended_hotbar_slot_count() > 0 then
+                            extended_hotbar_update_selected_visuals()
+                        end
+                        task.wait(0.05)
+                    end
+                end)
+
+                -- BackpackFrame opening/closing changes MainFrame geometry. Refresh on the
+                -- visibility edge so the three extension markers keep the same native spacing
+                -- immediately when entering/leaving inventory.
+                task.spawn(function()
+                    local backpack_gui = extended_hotbar_get_backpack_gui()
+                    local backpack_frame = backpack_gui and FindFirstChild(backpack_gui, "BackpackFrame")
+
+                    if backpack_frame then
+                        local visibility_connection = backpack_frame:GetPropertyChangedSignal("Visible"):Connect(function()
+                            task.defer(function()
+                                if shared and not shared.is_unloading and extended_hotbar_slot_count() > 0 then
+                                    -- Give BackpackClient one render step to apply its own size change.
+                                    rs.RenderStepped:Wait()
+                                    extended_hotbar_refresh()
+                                end
+                            end)
+                        end)
+
+                        if shared and shared.connections then
+                            shared.connections[#shared.connections + 1] = visibility_connection
+                        end
+                    end
+                end)
+
+                task.defer(extended_hotbar_refresh)
+
+                -- BackpackClient finishes sizing/positioning MainFrame shortly after execution.
+                -- Re-run once after that layout settles so empty extension slots look correct on
+                -- first load instead of only fixing themselves after the first drag assignment.
+                task.delay(0.35, function()
+                    if shared and not shared.is_unloading and extended_hotbar_slot_count() > 0 then
+                        extended_hotbar_refresh()
+                    end
+                end)
+
+                task.delay(1.0, function()
+                    if shared and not shared.is_unloading and extended_hotbar_slot_count() > 0 then
+                        extended_hotbar_refresh()
+                    end
+                end)
+
+                task.delay(2.0, function()
+                    if shared and not shared.is_unloading and extended_hotbar_slot_count() > 0 then
+                        extended_hotbar_refresh()
+                    end
+                end)
+            end)()
 
             group_exploits:AddToggle("fall_damage_reducer", {
                 Text = "Fall Damage Reducer",
