@@ -373,7 +373,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         },
         connections = {},
         hidden_connections = {},
-        blatant_features = {"flight", "better_flight", "no_fall", "no_killbrick", "auto_bag", "NoStun", "PerfloraTeleport", "parry_ignore_visibility", "forcefield", "anti_globus", "fling", "loop_orderly", "start_path", "test_path", "enable_aa_bypass"},
+        blatant_features = {"flight", "better_flight", "no_fall", "no_killbrick", "auto_bag", "NoStun", "SoftNoStun", "WingSoarBoost", "PerfloraTeleport", "parry_ignore_visibility", "forcefield", "anti_globus", "fling", "loop_orderly", "start_path", "test_path", "enable_aa_bypass"},
         blatant_toggles = {},
         theme = {
             inline = Color3.fromRGB(3, 3, 3),
@@ -473,6 +473,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             hold_block = false,
             hold_block_delay = 0,
             no_stun = false,
+            soft_nostun = false,
             gelidus_boost = false,
             gelidus_boost_value = 103,
             geli_fling = false,
@@ -482,6 +483,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             battle_theme_volume = 50,
             anti_grapple = false,
             hoppa_boost = false,
+            wing_soar_boost = false,
             foot_serum = false,
             foot_serum_value = 2.8,
             anti_confusion = false,
@@ -9404,6 +9406,27 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         end
     end
     
+    -- Soft Nostun Wrathful Leap override. The Cooldown Visualizer's normal
+    -- LeftClick + animation confirmation path calls this after a confirmed Leap.
+    function cheat_client.start_soft_nostun_wrathful_window()
+        if not cheat_client.config.soft_nostun then
+            return
+        end
+
+        cheat_client._soft_nostun_wrathful_until = os.clock() + 2.5
+
+        -- Clear any Action / HeavyAttack that already exists at the instant the
+        -- confirmed Leap begins; ChildAdded handles anything created afterward.
+        local character = plr.Character
+        if character then
+            for _, object in ipairs(character:GetChildren()) do
+                if object.Name == "Action" or object.Name == "HeavyAttack" then
+                    pcall(function() object:Destroy() end)
+                end
+            end
+        end
+    end
+
     --[[
         Cooldown Visualizer
 
@@ -9418,6 +9441,48 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
     cheat_client.cooldown_visualizer = (function()
         local moves = {
             {"Wrathful Leap", "122649765707672", 0.2, 11.75},
+
+            -- Wing Soar: confirm the initial use from a newly-added BodyVelocity
+            -- (Velocity.Y 175-185, MaxForce.Y == math.huge) within 0.400s.
+            -- Then allow up to two recasts, each confirmed by a new BodyVelocity
+            -- with Velocity.Y 58-63. Missing either recast window uses 10.3s;
+            -- confirming both recasts starts the full 14.5s cooldown immediately.
+            {
+                name = "Wing Soar",
+                confirmation_window = 0.400,
+                cooldown_time = 14.5,
+                incomplete_recast_cooldown = 10.3,
+
+                special = "wing_soar_velocity_recasts",
+
+                initial_velocity_y_min = 175,
+                initial_velocity_y_max = 185,
+                recast_velocity_y_min = 58,
+                recast_velocity_y_max = 63,
+
+                required_maxforce_y = math.huge,
+                recast_window = 5,
+                max_recasts = 2,
+            },
+
+            -- Verto: M2/RightClick arms a 0.750s window. Both animation
+            -- 2888533351 and a newly-added Torso Sound named "summon"
+            -- must be seen inside that same window.
+            {
+                name = "Verto",
+                animation_id = "2888533351",
+                animation_window = 0.750,
+                confirmation_window = 0.750,
+                cooldown_time = 20.8,
+
+                activation_remote = "RightClick",
+                special = "instance_and_animation",
+
+                required_instance_name = "summon",
+                required_instance_class = "Sound",
+                required_parent_name = "Torso",
+                required_instance_window = 0.750,
+            },
 
             -- Abyssal Scream: both the animation AND a newly-added NoAttack
             -- Accessory must be seen within 0.150s of the activation remote.
@@ -9474,13 +9539,26 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     cooldown_time = tonumber(row.cooldown_time) or 0,
 
                     special = row.special,
+                    activation_remote = row.activation_remote,
+                    confirmation_window = tonumber(row.confirmation_window),
+
                     speedlock_window = tonumber(row.speedlock_window),
                     emerge_window = tonumber(row.emerge_window),
                     emerge_cooldown = tonumber(row.emerge_cooldown),
 
                     required_instance_name = row.required_instance_name,
                     required_instance_class = row.required_instance_class,
+                    required_parent_name = row.required_parent_name,
                     required_instance_window = tonumber(row.required_instance_window),
+
+                    incomplete_recast_cooldown = tonumber(row.incomplete_recast_cooldown),
+                    initial_velocity_y_min = tonumber(row.initial_velocity_y_min),
+                    initial_velocity_y_max = tonumber(row.initial_velocity_y_max),
+                    recast_velocity_y_min = tonumber(row.recast_velocity_y_min),
+                    recast_velocity_y_max = tonumber(row.recast_velocity_y_max),
+                    required_maxforce_y = row.required_maxforce_y,
+                    recast_window = tonumber(row.recast_window),
+                    max_recasts = tonumber(row.max_recasts),
 
                     -- Special moves are treated as a state machine. Once their
                     -- confirmed use is waiting on an end/resolution signal, simply
@@ -9538,6 +9616,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 -- Abyssal Scream that require both an animation and an instance.
                 pending_required_instance_seen = false,
                 pending_animation_seen = false,
+
+                -- Wing Soar tracks every BodyVelocity created after the use so
+                -- the initial launch and each recast can be distinguished by Y velocity.
+                wing_soar_connection = nil,
+                wing_soar_candidates = nil,
+                wing_soar_recasts = 0,
 
                 -- A special move stays locked against re-triggering while its
                 -- original confirmation animation is still running. This protects
@@ -10191,6 +10275,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             state.pending_required_instance_seen = false
             state.pending_animation_seen = false
 
+            if state.wing_soar_connection then
+                pcall(function()
+                    state.wing_soar_connection:Disconnect()
+                end)
+                state.wing_soar_connection = nil
+            end
+            state.wing_soar_candidates = nil
+            state.wing_soar_recasts = 0
+
             state.special_active = false
             state.special_started_at = nil
             state.special_button = nil
@@ -10338,6 +10431,258 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if overlay and overlay.Parent then
                     overlay:Destroy()
                 end
+            end)
+        end
+
+        -- Wing Soar uses replicated BodyVelocity signatures rather than an
+        -- animation. Keep this self-contained so it does not affect other moves.
+        local function disconnect_wing_soar_connection(state)
+            if state.wing_soar_connection then
+                pcall(function()
+                    state.wing_soar_connection:Disconnect()
+                end)
+                state.wing_soar_connection = nil
+            end
+
+            state.wing_soar_candidates = nil
+        end
+
+        local function wing_soar_velocity_matches(profile, body_velocity, y_min, y_max)
+            if not body_velocity or not body_velocity:IsA("BodyVelocity") then
+                return false
+            end
+
+            local success, velocity, max_force = pcall(function()
+                return body_velocity.Velocity, body_velocity.MaxForce
+            end)
+
+            if not success or not velocity or not max_force then
+                return false
+            end
+
+            local required_maxforce_y = profile.required_maxforce_y or math.huge
+
+            if required_maxforce_y == math.huge then
+                if max_force.Y ~= math.huge then
+                    return false
+                end
+            elseif max_force.Y < required_maxforce_y then
+                return false
+            end
+
+            local y = velocity.Y
+            if y >= y_min and y <= y_max then
+                return true
+            end
+
+            -- Wing Soar Boost edits the same replicated BodyVelocities that the
+            -- visualizer watches. Accept the boosted Y values too so enabling the
+            -- boost cannot make Wing Soar disappear from the cooldown visualizer.
+            if cheat_client.config.wing_soar_boost then
+                if y_min <= 175 and y_max >= 180 and math.abs(y - 200) <= 0.001 then
+                    return true
+                end
+
+                if y_min <= 60 and y_max >= 60 and math.abs(y - 73) <= 0.001 then
+                    return true
+                end
+            end
+
+            return false
+        end
+
+        local function find_wing_soar_candidate(profile, candidates, added_after, added_before, y_min, y_max)
+            if not candidates then
+                return nil
+            end
+
+            for object, added_at in pairs(candidates) do
+                if added_at >= added_after
+                    and added_at <= added_before
+                    and wing_soar_velocity_matches(profile, object, y_min, y_max)
+                then
+                    return object
+                end
+            end
+
+            return nil
+        end
+
+        local function finish_wing_soar_cooldown(profile, state, token, duration_override)
+            if state.special_token ~= token or not state.special_active then
+                return
+            end
+
+            local button = state.special_button
+
+            state.special_token += 1
+            state.special_active = false
+            state.special_started_at = nil
+            state.special_button = nil
+            state.wing_soar_recasts = 0
+            state.move_in_progress = false
+
+            disconnect_wing_soar_connection(state)
+
+            start_cooldown(
+                profile,
+                button,
+                duration_override or profile.cooldown_time or 14.5
+            )
+        end
+
+        local function start_wing_soar_recast_resolution(profile, state, cached_button, character)
+            state.special_token += 1
+            local token = state.special_token
+
+            state.special_active = true
+            state.special_started_at = os.clock()
+            state.special_button = cached_button
+            state.wing_soar_recasts = 0
+            state.move_in_progress = false
+
+            local candidates = state.wing_soar_candidates
+            local recast_window = profile.recast_window or 5
+            local max_recasts = profile.max_recasts or 2
+
+            task.spawn(function()
+                for recast_index = 1, max_recasts do
+                    if state.special_token ~= token
+                        or not state.special_active
+                        or not cheat_client.config.cooldown_visualizer
+                        or plr.Character ~= character
+                    then
+                        return
+                    end
+
+                    local window_started_at = os.clock()
+                    local window_ends_at = window_started_at + recast_window
+                    local matched_velocity = nil
+
+                    repeat
+                        if state.special_token ~= token
+                            or not state.special_active
+                            or not cheat_client.config.cooldown_visualizer
+                            or plr.Character ~= character
+                        then
+                            return
+                        end
+
+                        matched_velocity = find_wing_soar_candidate(
+                            profile,
+                            candidates,
+                            window_started_at,
+                            window_ends_at,
+                            profile.recast_velocity_y_min or 58,
+                            profile.recast_velocity_y_max or 63
+                        )
+
+                        if matched_velocity then
+                            break
+                        end
+
+                        task.wait()
+                    until os.clock() > window_ends_at
+
+                    if not matched_velocity then
+                        finish_wing_soar_cooldown(
+                            profile,
+                            state,
+                            token,
+                            profile.incomplete_recast_cooldown or 10.3
+                        )
+                        return
+                    end
+
+                    candidates[matched_velocity] = nil
+                    state.wing_soar_recasts = recast_index
+
+                    if recast_index >= max_recasts then
+                        finish_wing_soar_cooldown(profile, state, token)
+                        return
+                    end
+                end
+            end)
+        end
+
+        local function start_wing_soar_initial_scan(profile, state, token)
+            local character = plr.Character
+            if not character then
+                return
+            end
+
+            disconnect_wing_soar_connection(state)
+
+            local candidates = {}
+            state.wing_soar_candidates = candidates
+            state.move_in_progress = true
+
+            -- Connect before the original LeftClick call continues, matching the
+            -- source implementation so only BodyVelocities from/after this use count.
+            state.wing_soar_connection = character.DescendantAdded:Connect(function(object)
+                if object:IsA("BodyVelocity") then
+                    candidates[object] = os.clock()
+                end
+            end)
+
+            local activation_at = state.pending_at or os.clock()
+            local confirmation_window = profile.confirmation_window or 0.400
+            local confirmation_ends_at = activation_at + confirmation_window
+
+            task.spawn(function()
+                local matched_velocity = nil
+
+                repeat
+                    if state.pending_token ~= token
+                        or not cheat_client.config.cooldown_visualizer
+                        or plr.Character ~= character
+                    then
+                        return
+                    end
+
+                    matched_velocity = find_wing_soar_candidate(
+                        profile,
+                        candidates,
+                        activation_at,
+                        confirmation_ends_at,
+                        profile.initial_velocity_y_min or 175,
+                        profile.initial_velocity_y_max or 185
+                    )
+
+                    if matched_velocity then
+                        break
+                    end
+
+                    task.wait()
+                until os.clock() > confirmation_ends_at
+
+                if not matched_velocity then
+                    if state.pending_token == token then
+                        state.pending_at = nil
+                        state.pending_button = nil
+                        state.pending_required_instance_seen = false
+                        state.pending_animation_seen = false
+                        state.move_in_progress = false
+                        disconnect_wing_soar_connection(state)
+                    end
+                    return
+                end
+
+                local cached_button = state.pending_button
+                candidates[matched_velocity] = nil
+
+                state.pending_at = nil
+                state.pending_button = nil
+                state.pending_required_instance_seen = false
+                state.pending_animation_seen = false
+                state.pending_token += 1
+
+                start_wing_soar_recast_resolution(
+                    profile,
+                    state,
+                    cached_button,
+                    character
+                )
             end)
         end
 
@@ -10593,11 +10938,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         local window = profile.required_instance_window or profile.animation_window
                         local class_ok = not profile.required_instance_class
                             or object:IsA(profile.required_instance_class)
+                        local parent_ok = not profile.required_parent_name
+                            or (object.Parent and object.Parent.Name == profile.required_parent_name)
 
                         if elapsed >= 0
                             and elapsed <= window
                             and object.Name == profile.required_instance_name
                             and class_ok
+                            and parent_ok
                         then
                             state.pending_required_instance_seen = true
                             try_confirm_instance_and_animation(profile, state)
@@ -10747,26 +11095,65 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         return
                     end
 
-                    confirm_animation(clean_animation_id(animation.AnimationId), track)
+                    local animation_id = clean_animation_id(animation.AnimationId)
+
+                    if cheat_client.config.soft_nostun
+                        and animation_id == "122649765707672"
+                        and os.clock() <= (tonumber(cheat_client._soft_nostun_wrathful_pending_until) or 0)
+                    then
+                        cheat_client._soft_nostun_wrathful_pending_until = 0
+                        if cheat_client.start_soft_nostun_wrathful_window then
+                            cheat_client.start_soft_nostun_wrathful_window()
+                        end
+                    end
+
+                    confirm_animation(animation_id, track)
                 end)
             end)
         end
 
         local function handle_remote(event, remotes_folder)
-            if not cheat_client.config.cooldown_visualizer then
+            local cooldown_enabled = cheat_client.config.cooldown_visualizer
+            local soft_nostun_enabled = cheat_client.config.soft_nostun
+
+            if not cooldown_enabled and not soft_nostun_enabled then
+                return
+            end
+
+            -- Soft Nostun reuses the same Wrathful Leap confirmation recipe as the
+            -- cooldown visualizer: equipped Wrathful Leap + LeftClick, followed by
+            -- animation 122649765707672 inside its 0.2s animation window.
+            if soft_nostun_enabled
+                and remotes_folder
+                and event.Parent == remotes_folder
+                and event.Name == "LeftClick"
+            then
+                local soft_profile = get_equipped_profile()
+                if soft_profile and soft_profile.name == "Wrathful Leap" then
+                    cheat_client._soft_nostun_wrathful_pending_until = os.clock() + (soft_profile.animation_window or 0.2)
+                end
+            end
+
+            if not cooldown_enabled then
                 return
             end
 
             -- Snaps use RightClick and their own confirmation/state machine.
             snap_system.handle_remote(event, remotes_folder)
 
-            -- Normal move cooldowns continue to use LeftClick.
-            if not remotes_folder or event.Parent ~= remotes_folder or event.Name ~= "LeftClick" then
+            -- Most normal moves use LeftClick. Profiles such as Verto can
+            -- explicitly opt into another activation remote while keeping a red cooldown.
+            if not remotes_folder or event.Parent ~= remotes_folder then
                 return
             end
 
             local profile = get_equipped_profile()
             if not profile then
+                return
+            end
+
+            local activation_remote = profile.activation_remote or "LeftClick"
+            if event.Name ~= activation_remote then
                 return
             end
 
@@ -10796,6 +11183,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             state.pending_at = os.clock()
             state.pending_required_instance_seen = false
             state.pending_animation_seen = false
+
+            if profile.special == "wing_soar_velocity_recasts" then
+                start_wing_soar_initial_scan(profile, state, token)
+                return
+            end
 
             -- Snapshot every SpeedLock that already existed BEFORE this use.
             -- A later scan can therefore distinguish the Rift Dive SpeedLock from
@@ -11924,6 +12316,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Default = cheat_client.config.no_stun
             })
 
+            group_combat_utils:AddToggle("SoftNoStun", {
+                Text = "Soft Nostun",
+                Default = cheat_client.config.soft_nostun
+            })
+
             group_combat_utils:AddToggle("AntiHystericus", {
                 Text = "No Confusion",
                 Default = cheat_client.config.anti_confusion
@@ -11982,6 +12379,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             group_combat_utils:AddToggle("HoppaBoost", {
                 Text = "Hoppa Boost",
                 Default = cheat_client.config.hoppa_boost
+            })
+
+            group_combat_utils:AddToggle("WingSoarBoost", {
+                Text = "Wing Soar Boost",
+                Default = cheat_client.config.wing_soar_boost
             })
 
             group_combat_utils:AddToggle("FootSerum", {
@@ -12187,6 +12589,16 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 cheat_client.config.no_stun = value
             end)
 
+            Toggles.SoftNoStun:OnChanged(function()
+                local value = Toggles.SoftNoStun.Value
+                cheat_client.config.soft_nostun = value
+
+                if not value then
+                    cheat_client._soft_nostun_wrathful_pending_until = 0
+                    cheat_client._soft_nostun_wrathful_until = 0
+                end
+            end)
+
             Toggles.AntiHystericus:OnChanged(function()
                 local value = Toggles.AntiHystericus.Value
                 cheat_client.config.anti_confusion = value
@@ -12249,6 +12661,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     if cheat_client.stop_hoppa_boost then
                         cheat_client.stop_hoppa_boost()
                     end
+                end
+            end)
+
+            Toggles.WingSoarBoost:OnChanged(function()
+                local value = Toggles.WingSoarBoost.Value
+                cheat_client.config.wing_soar_boost = value
+
+                if not value and cheat_client.wing_soar_boost and cheat_client.wing_soar_boost.stop then
+                    cheat_client.wing_soar_boost.stop()
                 end
             end)
 
@@ -32577,6 +32998,207 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
         end
 
+        -- Wing Soar Boost is independent of the Cooldown Visualizer toggle.
+        -- It arms on the same LeftClick + equipped Wing Soar path, confirms the
+        -- initial replicated BodyVelocity, then watches every later BodyVelocity
+        -- from that Wing Soar chain for at most 10 seconds.
+        cheat_client.wing_soar_boost = (function()
+            local active_connection = nil
+            local scan_token = 0
+            local scan_running = false
+
+            local function disconnect_active()
+                if active_connection then
+                    pcall(function()
+                        active_connection:Disconnect()
+                    end)
+                    active_connection = nil
+                end
+            end
+
+            local function stop()
+                scan_token += 1
+                scan_running = false
+                disconnect_active()
+            end
+
+            local function has_wing_soar_equipped(character)
+                if not character then
+                    return false
+                end
+
+                for _, object in ipairs(character:GetChildren()) do
+                    if object:IsA("Tool") and object.Name == "Wing Soar" then
+                        return true
+                    end
+                end
+
+                return false
+            end
+
+            local function read_velocity(body_velocity)
+                if not body_velocity or not body_velocity:IsA("BodyVelocity") then
+                    return nil, nil
+                end
+
+                local ok, velocity, max_force = pcall(function()
+                    return body_velocity.Velocity, body_velocity.MaxForce
+                end)
+
+                if not ok then
+                    return nil, nil
+                end
+
+                return velocity, max_force
+            end
+
+            local function set_velocity_y(body_velocity, y)
+                local velocity = body_velocity and body_velocity.Velocity
+                if not velocity then
+                    return
+                end
+
+                body_velocity.Velocity = Vector3.new(velocity.X, y, velocity.Z)
+            end
+
+            local function begin_scan(character)
+                if scan_running or not character or character ~= plr.Character then
+                    return
+                end
+
+                scan_running = true
+                scan_token += 1
+                local token = scan_token
+                local candidates = {}
+
+                disconnect_active()
+                active_connection = character.DescendantAdded:Connect(function(object)
+                    if object:IsA("BodyVelocity") then
+                        candidates[object] = os.clock()
+                    end
+                end)
+
+                local activation_at = os.clock()
+                local initial_deadline = activation_at + 0.400
+
+                task.spawn(function()
+                    local initial_velocity = nil
+
+                    -- Confirm the same high-Y launch used by Wing Soar's visualizer,
+                    -- but use the requested tighter 175-180 boost range.
+                    repeat
+                        if token ~= scan_token
+                            or not scan_running
+                            or not cheat_client.config.wing_soar_boost
+                            or plr.Character ~= character
+                        then
+                            stop()
+                            return
+                        end
+
+                        for object, added_at in pairs(candidates) do
+                            if added_at >= activation_at and added_at <= initial_deadline and object.Parent then
+                                local velocity, max_force = read_velocity(object)
+                                if velocity and max_force
+                                    and max_force.Y == math.huge
+                                    and velocity.Y >= 175
+                                    and velocity.Y <= 180
+                                then
+                                    initial_velocity = object
+                                    break
+                                end
+                            end
+                        end
+
+                        if initial_velocity then
+                            break
+                        end
+
+                        task.wait()
+                    until os.clock() > initial_deadline
+
+                    if not initial_velocity then
+                        if token == scan_token then
+                            stop()
+                        end
+                        return
+                    end
+
+                    local initial_added_at = candidates[initial_velocity] or os.clock()
+                    candidates[initial_velocity] = nil
+                    set_velocity_y(initial_velocity, 200)
+
+                    -- Once the large launch is confirmed, scan for ALL follow-up
+                    -- Wing Soar BodyVelocities for at most 10 seconds. The normal
+                    -- recasts sit around Y=60 (visualizer range 58-63); every one
+                    -- found in the window is raised to Y=73. The timer starts from
+                    -- the actual big BodyVelocity's creation time.
+                    local follow_started_at = initial_added_at
+                    local follow_deadline = follow_started_at + 10
+
+                    while os.clock() <= follow_deadline do
+                        if token ~= scan_token
+                            or not scan_running
+                            or not cheat_client.config.wing_soar_boost
+                            or plr.Character ~= character
+                        then
+                            stop()
+                            return
+                        end
+
+                        for object, added_at in pairs(candidates) do
+                            if not object or not object.Parent then
+                                candidates[object] = nil
+                            elseif added_at >= follow_started_at then
+                                local velocity, max_force = read_velocity(object)
+                                if velocity and max_force
+                                    and max_force.Y == math.huge
+                                    and velocity.Y >= 58
+                                    and velocity.Y <= 63
+                                then
+                                    set_velocity_y(object, 73)
+                                    candidates[object] = nil
+                                end
+                            end
+                        end
+
+                        task.wait()
+                    end
+
+                    if token == scan_token then
+                        stop()
+                    end
+                end)
+            end
+
+            local function handle_remote(event, remotes_folder)
+                if not cheat_client.config.wing_soar_boost
+                    or scan_running
+                    or not remotes_folder
+                    or event.Parent ~= remotes_folder
+                    or event.Name ~= "LeftClick"
+                then
+                    return
+                end
+
+                local character = plr.Character
+                if not has_wing_soar_equipped(character) then
+                    return
+                end
+
+                -- This runs from the FireServer hook BEFORE the original LeftClick
+                -- continues, so the DescendantAdded watcher cannot miss the launch.
+                begin_scan(character)
+            end
+
+            utility:Connection(plr.CharacterRemoving, stop)
+
+            return {
+                handle_remote = handle_remote,
+                stop = stop,
+            }
+        end)()
+
         do
             local function block()
                 local blockRemote, unblockRemote
@@ -32614,6 +33236,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     -- Cooldown Visualizer only opens an activation window here.
                     -- The move is confirmed later by its animation.
                     cheat_client.cooldown_visualizer.handle_remote(Event, remotes_folder)
+
+                    -- Wing Soar Boost uses the same pre-LeftClick timing as the visualizer,
+                    -- but remains functional even when the visualizer itself is disabled.
+                    if cheat_client.wing_soar_boost and cheat_client.wing_soar_boost.handle_remote then
+                        cheat_client.wing_soar_boost.handle_remote(Event, remotes_folder)
+                    end
 
                     -- Khei Auto Knock: learn the current character's obfuscated fall-damage RemoteEvent.
                     if cheat_client.capture_auto_knock_fall_remote then
@@ -33684,6 +34312,124 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         do
             local character_debuff_connections = {}
 
+            -- Soft Nostun mirrors No Stun's character-status removal but deliberately
+            -- leaves these states alone. It never reads, changes, or destroys anything
+            -- inside Character.Boosts / SpeedBoost.
+            local soft_nostun_excluded = {
+                Action = true,
+                NoJump = true,
+                Casting = true,
+                ActiveCast = true,
+                TimeStopped = true,
+                BeingExecuted = true,
+                NoControl = true,
+                AttackExcept = true,
+                MustSprint = true,
+                BarrierCD = true,
+            }
+
+            -- ClimbCoolDown is intentionally handled separately from the normal
+            -- Soft Nostun list. Once the character's Climbing marker disappears,
+            -- remove ClimbCoolDown 0.700s after that exact climb-end moment.
+            local soft_nostun_climb_end_at = 0
+
+            local function remove_soft_nostun_climb_cooldown_after_end(char, climb_end_at)
+                task.spawn(function()
+                    local remaining = (climb_end_at + 0.700) - os.clock()
+                    if remaining > 0 then
+                        task.wait(remaining)
+                    end
+
+                    if not (char and char.Parent)
+                        or char ~= plr.Character
+                        or not (Toggles and Toggles.SoftNoStun and Toggles.SoftNoStun.Value)
+                        or soft_nostun_climb_end_at ~= climb_end_at
+                    then
+                        return
+                    end
+
+                    local cooldown = FindFirstChild(char, "ClimbCoolDown")
+                    if cooldown and cooldown.Parent == char then
+                        cooldown:Destroy()
+                    end
+                end)
+            end
+
+            local function handle_soft_nostun(obj)
+                if not (Toggles and Toggles.SoftNoStun and Toggles.SoftNoStun.Value) then
+                    return false
+                end
+
+                -- Wrathful Leap override: for 2.5s after a confirmed use, Action and
+                -- HeavyAttack are removed immediately even though Action is normally
+                -- excluded and HeavyAttack normally uses the small Soft Nostun delay.
+                local wrathful_until = tonumber(cheat_client._soft_nostun_wrathful_until) or 0
+                if os.clock() <= wrathful_until
+                    and (obj.Name == "Action" or obj.Name == "HeavyAttack")
+                then
+                    task.defer(function()
+                        if obj
+                            and obj.Parent
+                            and Toggles and Toggles.SoftNoStun and Toggles.SoftNoStun.Value
+                            and os.clock() <= (tonumber(cheat_client._soft_nostun_wrathful_until) or 0)
+                        then
+                            obj:Destroy()
+                        end
+                    end)
+                    return true
+                end
+
+                if obj.Name == "ClimbCoolDown" then
+                    local climb_end_at = soft_nostun_climb_end_at
+                    if climb_end_at <= 0 then
+                        return false
+                    end
+
+                    task.spawn(function()
+                        local remaining = (climb_end_at + 0.700) - os.clock()
+                        if remaining > 0 then
+                            task.wait(remaining)
+                        end
+
+                        if obj
+                            and obj.Parent
+                            and obj.Parent == plr.Character
+                            and Toggles and Toggles.SoftNoStun and Toggles.SoftNoStun.Value
+                            and soft_nostun_climb_end_at == climb_end_at
+                        then
+                            obj:Destroy()
+                        end
+                    end)
+                    return true
+                end
+
+                if not cheat_client.stuns[obj.Name] or soft_nostun_excluded[obj.Name] then
+                    return false
+                end
+
+                if obj.Name == "HeavyAttack" then
+                    task.delay(0.190, function()
+                        if obj
+                            and obj.Parent
+                            and Toggles and Toggles.SoftNoStun and Toggles.SoftNoStun.Value
+                        then
+                            obj:Destroy()
+                        end
+                    end)
+                else
+                    task.defer(function()
+                        if obj
+                            and obj.Parent
+                            and Toggles and Toggles.SoftNoStun and Toggles.SoftNoStun.Value
+                        then
+                            obj:Destroy()
+                        end
+                    end)
+                end
+
+                return true
+            end
+
             local function setupCharacterDebuffs(char)
                 for _, conn in pairs(character_debuff_connections) do
                     conn:Disconnect()
@@ -33692,7 +34438,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 local boosts = WaitForChild(char, "Boosts")
 
+                soft_nostun_climb_end_at = 0
+
                 character_debuff_connections[#character_debuff_connections + 1] = utility:Connection(char.ChildAdded, function(obj)
+                    if obj.Name == "Climbing" then
+                        -- A fresh climb invalidates the previous climb-end timestamp.
+                        soft_nostun_climb_end_at = 0
+                    end
+
                     if obj.Name == 'Confused' and Toggles and Toggles.AntiHystericus and Toggles.AntiHystericus.Value then
                         task.defer(obj.Destroy, obj)
                         return
@@ -33707,6 +34460,25 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         task.defer(obj.Destroy, obj)
                         return
                     end
+
+                    -- Full No Stun above keeps its original behavior and wins when both
+                    -- toggles are enabled. Soft Nostun only handles character stun markers.
+                    if handle_soft_nostun(obj) then
+                        return
+                    end
+                end)
+
+                character_debuff_connections[#character_debuff_connections + 1] = utility:Connection(char.ChildRemoved, function(obj)
+                    if obj.Name ~= "Climbing" then
+                        return
+                    end
+
+                    if not (Toggles and Toggles.SoftNoStun and Toggles.SoftNoStun.Value) then
+                        return
+                    end
+
+                    soft_nostun_climb_end_at = os.clock()
+                    remove_soft_nostun_climb_cooldown_after_end(char, soft_nostun_climb_end_at)
                 end)
 
                 character_debuff_connections[#character_debuff_connections + 1] = utility:Connection(boosts.ChildAdded, function(obj)
