@@ -39231,7 +39231,63 @@ end
                 local humanoid = FindFirstChildOfClass(plr.Character, "Humanoid")
                 local mana = FindFirstChild(plr.Character, "Mana")
                 if humanoid and mana and mana.Value > 0 then
-                    humanoid:UnequipTools()
+                    local character = plr.Character
+                    local backpack = plr.Backpack
+
+                    local function hasTool(toolName)
+                        local charTool = character and FindFirstChild(character, toolName)
+                        if charTool and charTool:IsA("Tool") then
+                            return true
+                        end
+
+                        local backpackTool = backpack and FindFirstChild(backpack, toolName)
+                        return backpackTool and backpackTool:IsA("Tool") or false
+                    end
+
+                    -- Oni with both movement skills should parry bare-handed.
+                    local hasDemonFlip = hasTool("Demon Flip")
+                    local hasDemonStep = hasTool("Demon Step")
+
+                    if hasDemonFlip and hasDemonStep then
+                        humanoid:UnequipTools()
+                    else
+                        local parryWeapons = {
+                            "Tanto",
+                            "Dagger",
+                            "Sword",
+                            "Greatsword",
+                            "Spear",
+                            "Katana",
+                        }
+
+                        local validParryWeapon = {}
+                        for _, weaponName in ipairs(parryWeapons) do
+                            validParryWeapon[weaponName] = true
+                        end
+
+                        local equippedTool = FindFirstChildOfClass(character, "Tool")
+
+                        -- Already holding one of the preferred weapons: do not touch it.
+                        if not (equippedTool and validParryWeapon[equippedTool.Name]) then
+                            local weaponToEquip = nil
+
+                            -- Pick the first owned weapon using the requested priority order.
+                            for _, weaponName in ipairs(parryWeapons) do
+                                local tool = backpack and FindFirstChild(backpack, weaponName)
+                                if tool and tool:IsA("Tool") then
+                                    weaponToEquip = tool
+                                    break
+                                end
+                            end
+
+                            if weaponToEquip then
+                                humanoid:EquipTool(weaponToEquip)
+                            else
+                                -- No preferred weapon available: preserve the old fallback.
+                                humanoid:UnequipTools()
+                            end
+                        end
+                    end
                 end
 
                 local blockRemote, unblockRemote
