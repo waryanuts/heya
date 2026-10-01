@@ -478,6 +478,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             geli_fling = false,
             geli_fling_value = 50,
             blacksmith_m2_serum = false,
+            battle_theme = false,
+            battle_theme_volume = 50,
             anti_grapple = false,
             hoppa_boost = false,
             foot_serum = false,
@@ -1780,6 +1782,521 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         end
     end
 
+    -- Battle Theme
+    -- Pulls the current MP3 list directly from the public GitHub folder. A selected
+    -- track is downloaded only when it is needed, cached by Git blob SHA, and then
+    -- played as a local custom asset. Danger entering starts a random track. Danger
+    -- leaving fades it to zero over 3 seconds. If Danger returns during that fade,
+    -- the fade is allowed to finish completely before a fresh random track starts.
+    LPH_NO_VIRTUALIZE(function()
+        local BATTLE_THEME_API = "https://api.github.com/repos/Gurberson/gurtson/contents/DEPENDENCIES/BATTLE_THEMES?ref=main"
+        local BATTLE_THEME_CACHE = "HYDROXIDE/battle_themes"
+        local BATTLE_THEME_FADE_TIME = 3
+
+        local battle_sound = Instance.new("Sound")
+        battle_sound.Name = "HydroxideBattleTheme"
+        battle_sound.Looped = true
+        battle_sound.Volume = 0
+        battle_sound.Parent = Services.SoundService
+
+        local battle_random = Random.new()
+        local battle_entries = {}
+        local battle_entries_loaded = false
+        local battle_entries_loading = false
+        local battle_last_key = nil
+        local battle_fading = false
+        local battle_pending_start = false
+        local battle_fade_tween = nil
+        local battle_fade_serial = 0
+        local battle_play_serial = 0
+        local battle_last_error = nil
+
+        local function battle_notify(message)
+            pcall(function()
+                if library and library.Notify then
+                    library:Notify(message, 4)
+                else
+                    warn("[Battle Theme] " .. tostring(message))
+                end
+            end)
+        end
+
+        local function battle_target_volume()
+            return math.clamp((tonumber(cheat_client.config.battle_theme_volume) or 50) / 100, 0, 1)
+        end
+
+        local function battle_in_danger()
+            local character = plr.Character
+            return character ~= nil and cs:HasTag(character, "Danger")
+        end
+
+        local function battle_asset_function()
+            if type(getcustomasset) == "function" then
+                return getcustomasset
+            end
+            if type(getsynasset) == "function" then
+                return getsynasset
+            end
+            if syn then
+                if type(syn.getcustomasset) == "function" then
+                    return syn.getcustomasset
+                end
+                if type(syn.getsynasset) == "function" then
+                    return syn.getsynasset
+                end
+            end
+            return nil
+        end
+
+        local function battle_http_get(url, api_request)
+            local requester = http_request or request or (syn and syn.request)
+
+            if requester then
+                local headers = {
+                    ["User-Agent"] = "Hydroxide-BattleTheme"
+                }
+                if api_request then
+                    headers["Accept"] = "application/vnd.github+json"
+                end
+
+                local ok, response = pcall(requester, {
+                    Url = url,
+                    Method = "GET",
+                    Headers = headers
+                })
+
+                if ok and type(response) == "table" then
+                    local status = tonumber(response.StatusCode or response.statusCode or response.Status or 200) or 200
+                    local body = response.Body or response.body
+                    if status >= 200 and status < 300 and type(body) == "string" then
+                        return body
+                    end
+                    return nil, "HTTP " .. tostring(status)
+                elseif not ok then
+                    battle_last_error = tostring(response)
+                end
+            end
+
+            local ok, body = pcall(function()
+                return game:HttpGet(url, true)
+            end)
+            if ok and type(body) == "string" then
+                return body
+            end
+
+            return nil, battle_last_error or tostring(body)
+        end
+
+        local function battle_ensure_cache_folder()
+            if not makefolder or not isfolder then
+                return false, "folder functions are not supported"
+            end
+
+            local ok, err = pcall(function()
+                if not isfolder("HYDROXIDE") then
+                    makefolder("HYDROXIDE")
+                end
+                if not isfolder(BATTLE_THEME_CACHE) then
+                    makefolder(BATTLE_THEME_CACHE)
+                end
+            end)
+
+            if not ok then
+                return false, tostring(err)
+            end
+            return true
+        end
+
+        local function battle_refresh_entries(force)
+            if battle_entries_loaded and not force then
+                return #battle_entries > 0
+            end
+
+            if battle_entries_loading then
+                repeat
+                    task.wait()
+                until not battle_entries_loading or (shared and shared.is_unloading)
+                return battle_entries_loaded and #battle_entries > 0
+            end
+
+            battle_entries_loading = true
+
+            local body, err = battle_http_get(BATTLE_THEME_API, true)
+            if not body then
+                battle_entries_loading = false
+                battle_entries_loaded = false
+                battle_last_error = err
+                return false, err
+            end
+
+            local ok, decoded = pcall(function()
+                return Services.HttpService:JSONDecode(body)
+            end)
+
+            if not ok or type(decoded) ~= "table" then
+                battle_entries_loading = false
+                battle_entries_loaded = false
+                battle_last_error = ok and "invalid GitHub response" or tostring(decoded)
+                return false, battle_last_error
+            end
+
+            local found = {}
+            for _, item in ipairs(decoded) do
+                local name = type(item) == "table" and item.name or nil
+                if type(name) == "string"
+                    and name:lower():sub(-4) == ".mp3"
+                    and item.type == "file"
+                    and type(item.download_url) == "string"
+                    and item.download_url ~= ""
+                then
+                    found[#found + 1] = {
+                        name = name,
+                        sha = tostring(item.sha or ""),
+                        download_url = item.download_url
+                    }
+                end
+            end
+
+            table.sort(found, function(a, b)
+                return a.name:lower() < b.name:lower()
+            end)
+
+            battle_entries = found
+            battle_entries_loaded = true
+            battle_entries_loading = false
+            battle_last_error = nil
+
+            if #battle_entries == 0 then
+                return false, "no .mp3 files found in BATTLE_THEMES"
+            end
+
+            return true
+        end
+
+        local function battle_cache_path(entry)
+            local safe_name = entry.name:gsub("[^%w%._%-]", "_")
+            local stem = safe_name:gsub("%.mp3$", "")
+            local sha = tostring(entry.sha or ""):gsub("[^%w]", ""):sub(1, 12)
+            if sha == "" then
+                sha = "current"
+            end
+            return string.format("%s/%s_%s.mp3", BATTLE_THEME_CACHE, stem, sha)
+        end
+
+        local function battle_ensure_cached(entry)
+            if not writefile or not isfile then
+                return nil, "writefile/isfile are not supported"
+            end
+
+            local folder_ok, folder_err = battle_ensure_cache_folder()
+            if not folder_ok then
+                return nil, folder_err
+            end
+
+            local path = battle_cache_path(entry)
+            local exists_ok, exists = pcall(function()
+                return isfile(path)
+            end)
+            if exists_ok and exists then
+                return path
+            end
+
+            local body, err = battle_http_get(entry.download_url, false)
+            if not body then
+                return nil, err
+            end
+
+            if #body < 128 then
+                return nil, "downloaded file was unexpectedly small"
+            end
+
+            local ok, write_err = pcall(function()
+                writefile(path, body)
+            end)
+            if not ok then
+                return nil, tostring(write_err)
+            end
+
+            return path
+        end
+
+        local function battle_make_asset(path)
+            local asset_function = battle_asset_function()
+            if not asset_function then
+                return nil, "getcustomasset/getsynasset is not supported"
+            end
+
+            local ok, asset = pcall(asset_function, path)
+            if not ok or type(asset) ~= "string" or asset == "" then
+                return nil, ok and "custom asset returned an empty id" or tostring(asset)
+            end
+            return asset
+        end
+
+        local function battle_build_candidates()
+            local candidates = {}
+            for _, entry in ipairs(battle_entries) do
+                local key = entry.sha ~= "" and entry.sha or entry.name
+                if #battle_entries == 1 or key ~= battle_last_key then
+                    candidates[#candidates + 1] = entry
+                end
+            end
+
+            -- Fisher-Yates shuffle so a failed file can fall through to another random song.
+            for i = #candidates, 2, -1 do
+                local j = battle_random:NextInteger(1, i)
+                candidates[i], candidates[j] = candidates[j], candidates[i]
+            end
+
+            return candidates
+        end
+
+        local function battle_play_new_theme()
+            if not cheat_client.config.battle_theme
+                or battle_fading
+                or not battle_in_danger()
+                or (shared and shared.is_unloading)
+            then
+                return false
+            end
+
+            battle_play_serial += 1
+            local serial = battle_play_serial
+
+            local loaded, load_err = battle_refresh_entries(false)
+            if not loaded then
+                if serial == battle_play_serial and cheat_client.config.battle_theme then
+                    battle_notify("Battle Theme: couldn't read GitHub themes (" .. tostring(load_err or "unknown error") .. ")")
+                end
+                return false
+            end
+
+            for _, entry in ipairs(battle_build_candidates()) do
+                if serial ~= battle_play_serial
+                    or not cheat_client.config.battle_theme
+                    or battle_fading
+                    or not battle_in_danger()
+                    or (shared and shared.is_unloading)
+                then
+                    return false
+                end
+
+                local path, cache_err = battle_ensure_cached(entry)
+                if path then
+                    local asset, asset_err = battle_make_asset(path)
+                    if asset then
+                        if serial ~= battle_play_serial
+                            or not cheat_client.config.battle_theme
+                            or battle_fading
+                            or not battle_in_danger()
+                        then
+                            return false
+                        end
+
+                        pcall(function()
+                            battle_sound:Stop()
+                            battle_sound.SoundId = asset
+                            battle_sound.TimePosition = 0
+                            battle_sound.Volume = battle_target_volume()
+                            battle_sound.Looped = true
+                            battle_sound:Play()
+                        end)
+
+                        battle_last_key = entry.sha ~= "" and entry.sha or entry.name
+                        return true
+                    else
+                        battle_last_error = asset_err
+                    end
+                else
+                    battle_last_error = cache_err
+                end
+            end
+
+            if serial == battle_play_serial and cheat_client.config.battle_theme then
+                battle_notify("Battle Theme: no playable MP3 (" .. tostring(battle_last_error or "unknown error") .. ")")
+            end
+            return false
+        end
+
+        local function battle_stop_now()
+            battle_play_serial += 1
+            battle_pending_start = false
+            battle_fade_serial += 1
+            battle_fading = false
+
+            if battle_fade_tween then
+                pcall(function()
+                    battle_fade_tween:Cancel()
+                end)
+                battle_fade_tween = nil
+            end
+
+            pcall(function()
+                battle_sound:Stop()
+                battle_sound.TimePosition = 0
+                battle_sound.Volume = 0
+            end)
+        end
+
+        local function battle_begin_fade()
+            battle_play_serial += 1
+            battle_pending_start = false
+
+            if battle_fading then
+                return
+            end
+
+            if not battle_sound.IsPlaying then
+                battle_sound.Volume = 0
+                return
+            end
+
+            battle_fading = true
+            battle_fade_serial += 1
+            local fade_serial = battle_fade_serial
+
+            if battle_fade_tween then
+                pcall(function()
+                    battle_fade_tween:Cancel()
+                end)
+            end
+
+            battle_fade_tween = ts:Create(
+                battle_sound,
+                TweenInfo.new(BATTLE_THEME_FADE_TIME, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
+                {Volume = 0}
+            )
+            battle_fade_tween:Play()
+
+            task.spawn(function()
+                pcall(function()
+                    battle_fade_tween.Completed:Wait()
+                end)
+
+                if fade_serial ~= battle_fade_serial then
+                    return
+                end
+
+                pcall(function()
+                    battle_sound:Stop()
+                    battle_sound.TimePosition = 0
+                    battle_sound.Volume = 0
+                end)
+
+                battle_fade_tween = nil
+                battle_fading = false
+
+                -- Re-entering Danger during the fade deliberately does NOT cancel the
+                -- fade. Once it fully ends, start a brand-new random track if still tagged.
+                local should_restart = battle_pending_start
+                    and cheat_client.config.battle_theme
+                    and battle_in_danger()
+                    and not (shared and shared.is_unloading)
+
+                battle_pending_start = false
+
+                if should_restart then
+                    task.spawn(battle_play_new_theme)
+                end
+            end)
+        end
+
+        local function battle_on_danger_added(instance)
+            if instance ~= plr.Character or not cheat_client.config.battle_theme then
+                return
+            end
+
+            if battle_fading then
+                battle_pending_start = true
+                return
+            end
+
+            if not battle_sound.IsPlaying then
+                task.spawn(battle_play_new_theme)
+            end
+        end
+
+        local function battle_on_danger_removed(instance)
+            if instance ~= plr.Character or not cheat_client.config.battle_theme then
+                return
+            end
+
+            -- If Danger was re-added during a fade and then removed again before the
+            -- fade completed, clear the queued restart because combat is no longer active.
+            if battle_fading then
+                battle_pending_start = false
+                return
+            end
+
+            battle_begin_fade()
+        end
+
+        function cheat_client.set_battle_theme_enabled(value)
+            value = value == true
+            cheat_client.config.battle_theme = value
+
+            if not value then
+                battle_stop_now()
+                return
+            end
+
+            task.spawn(function()
+                local loaded, err = battle_refresh_entries(true)
+                if not loaded then
+                    if cheat_client.config.battle_theme then
+                        battle_notify("Battle Theme: couldn't load GitHub themes (" .. tostring(err or "unknown error") .. ")")
+                    end
+                    return
+                end
+
+                if cheat_client.config.battle_theme and battle_in_danger() and not battle_fading then
+                    battle_play_new_theme()
+                end
+            end)
+        end
+
+        function cheat_client.set_battle_theme_volume(value)
+            cheat_client.config.battle_theme_volume = math.clamp(tonumber(value) or 50, 0, 100)
+
+            -- During the 3-second fade the tween owns Volume. Changing the slider then
+            -- affects the next combat track instead of interrupting the requested fade.
+            if not battle_fading and battle_sound.IsPlaying then
+                battle_sound.Volume = battle_target_volume()
+            end
+        end
+
+        function cheat_client.battle_theme_cleanup()
+            battle_stop_now()
+            pcall(function()
+                battle_sound:Destroy()
+            end)
+        end
+
+        local danger_added_connection = cs:GetInstanceAddedSignal("Danger"):Connect(battle_on_danger_added)
+        local danger_removed_connection = cs:GetInstanceRemovedSignal("Danger"):Connect(battle_on_danger_removed)
+        local battle_character_added_connection = plr.CharacterAdded:Connect(function(character)
+            battle_stop_now()
+
+            -- Normally Danger is added after CharacterAdded. This small deferred check
+            -- also catches a character that arrives already tagged before our signal runs.
+            task.delay(0.25, function()
+                if plr.Character == character
+                    and cheat_client.config.battle_theme
+                    and cs:HasTag(character, "Danger")
+                    and not battle_fading
+                then
+                    battle_play_new_theme()
+                end
+            end)
+        end)
+
+        if shared and shared.connections then
+            shared.connections[#shared.connections + 1] = danger_added_connection
+            shared.connections[#shared.connections + 1] = danger_removed_connection
+            shared.connections[#shared.connections + 1] = battle_character_added_connection
+        end
+    end)()
+
     local friends_file = "HYDROXIDE/friends.json"
     function cheat_client:save_friends()
         local success, err = pcall(function()
@@ -2681,6 +3198,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             if shared then
                 shared.is_unloading = true
             end
+
+            pcall(function()
+                if cheat_client and cheat_client.battle_theme_cleanup then
+                    cheat_client.battle_theme_cleanup()
+                end
+            end)
 
             task.wait(0.5)
 
@@ -11623,6 +12146,40 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             group_silent_aim:AddToggle("SilentAimVisibleCheck", {
                 Text = "Visible Check",
                 Default = cheat_client.config.visible_check
+            })
+
+            -- Reuse the finished Silent Aim groupbox local to avoid increasing this
+            -- large UI function's live-register count.
+            group_silent_aim = Tabs.Combat:AddRightGroupbox("Battle Theme")
+
+            group_silent_aim:AddToggle("BattleTheme", {
+                Text = "Battle Theme",
+                Default = cheat_client.config.battle_theme,
+                Tooltip = "Plays a random MP3 from the GitHub BATTLE_THEMES folder while in Danger",
+                Callback = function(value)
+                    if cheat_client.set_battle_theme_enabled then
+                        cheat_client.set_battle_theme_enabled(value)
+                    else
+                        cheat_client.config.battle_theme = value
+                    end
+                end
+            })
+
+            group_silent_aim:AddSlider("BattleThemeVolume", {
+                Text = "Volume",
+                Default = cheat_client.config.battle_theme_volume or 50,
+                Min = 0,
+                Max = 100,
+                Rounding = 0,
+                Compact = true,
+                Suffix = "%",
+                Callback = function(value)
+                    if cheat_client.set_battle_theme_volume then
+                        cheat_client.set_battle_theme_volume(value)
+                    else
+                        cheat_client.config.battle_theme_volume = value
+                    end
+                end
             })
 
             Toggles.NoStun:OnChanged(function()
