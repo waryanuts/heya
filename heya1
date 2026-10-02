@@ -481,6 +481,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             blacksmith_m2_serum = false,
             battle_theme = false,
             battle_theme_volume = 50,
+            better_blade_enabled = false,
+            better_blade_verto_weapon = "",
+            better_blade_vulnere_weapon = "",
             anti_grapple = false,
             hoppa_boost = false,
             wing_soar_boost = false,
@@ -2298,6 +2301,273 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             shared.connections[#shared.connections + 1] = battle_character_added_connection
         end
     end)()
+
+    -- Better Blade
+    -- Event-driven only: no Heartbeat/render loops. When Verto or Vulnere is equipped,
+    -- press the WeaponUI TextButton whose visible Text matches that spell's configured
+    -- weapon. Matching buttons are also color-coded (Verto red, Vulnere blue).
+    do
+        local BETTER_BLADE_VERTO_COLOR = Color3.fromRGB(255, 0, 0)
+        local BETTER_BLADE_VULNERE_COLOR = Color3.fromRGB(0, 90, 255)
+        local better_blade_original_colors = setmetatable({}, {__mode = "k"})
+        local better_blade_button_connections = setmetatable({}, {__mode = "k"})
+        local better_blade_mainframe_connection = nil
+        local better_blade_character_connection = nil
+
+        local function better_blade_normalize(value)
+            return tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower()
+        end
+
+        local function better_blade_targets()
+            return better_blade_normalize(cheat_client.config.better_blade_verto_weapon),
+                better_blade_normalize(cheat_client.config.better_blade_vulnere_weapon)
+        end
+
+        local function better_blade_get_mainframe()
+            local player_gui = FindFirstChild(plr, "PlayerGui")
+            local weapon_ui = player_gui and FindFirstChild(player_gui, "WeaponUI")
+            return weapon_ui and FindFirstChild(weapon_ui, "MainFrame") or nil
+        end
+
+        local function better_blade_style_button(button)
+            if not button or not button:IsA("TextButton") then
+                return
+            end
+
+            if better_blade_original_colors[button] == nil then
+                better_blade_original_colors[button] = button.TextColor3
+            end
+
+            local button_text = better_blade_normalize(button.Text)
+            local verto_target, vulnere_target = better_blade_targets()
+
+            if not cheat_client.config.better_blade_enabled then
+                button.TextColor3 = better_blade_original_colors[button]
+            elseif verto_target ~= "" and button_text == verto_target then
+                button.TextColor3 = BETTER_BLADE_VERTO_COLOR
+            elseif vulnere_target ~= "" and button_text == vulnere_target then
+                button.TextColor3 = BETTER_BLADE_VULNERE_COLOR
+            else
+                button.TextColor3 = better_blade_original_colors[button]
+            end
+        end
+
+        local function better_blade_bind_button(button)
+            if not button or not button:IsA("TextButton") then
+                return
+            end
+
+            better_blade_style_button(button)
+
+            if better_blade_button_connections[button] then
+                return
+            end
+
+            local connection = button:GetPropertyChangedSignal("Text"):Connect(function()
+                better_blade_style_button(button)
+            end)
+            better_blade_button_connections[button] = connection
+
+            if shared and shared.connections then
+                shared.connections[#shared.connections + 1] = connection
+            end
+        end
+
+        local function better_blade_refresh_buttons()
+            local main_frame = better_blade_get_mainframe()
+            if not main_frame then
+                return
+            end
+
+            for _, object in ipairs(main_frame:GetChildren()) do
+                if object:IsA("TextButton") then
+                    better_blade_bind_button(object)
+                end
+            end
+        end
+
+        local function better_blade_press_button(button)
+            if not button or not button.Parent then
+                return false
+            end
+
+            local pressed = false
+            if type(firesignal) == "function" then
+                pressed = pcall(firesignal, button.MouseButton1Click)
+            elseif type(replicatesignal) == "function" then
+                pressed = pcall(replicatesignal, button.MouseButton1Click)
+            else
+                pressed = pcall(function()
+                    button:Activate()
+                end)
+            end
+            return pressed
+        end
+
+        local function better_blade_press_for(spell_name)
+            if not cheat_client.config.better_blade_enabled then
+                return false
+            end
+
+            local target
+            if spell_name == "Verto" then
+                target = better_blade_normalize(cheat_client.config.better_blade_verto_weapon)
+            elseif spell_name == "Vulnere" then
+                target = better_blade_normalize(cheat_client.config.better_blade_vulnere_weapon)
+            end
+
+            if not target or target == "" then
+                return false
+            end
+
+            local main_frame = better_blade_get_mainframe()
+            if not main_frame then
+                return false
+            end
+
+            for _, object in ipairs(main_frame:GetChildren()) do
+                if object:IsA("TextButton") then
+                    better_blade_bind_button(object)
+                    if better_blade_normalize(object.Text) == target then
+                        return better_blade_press_button(object)
+                    end
+                end
+            end
+
+            return false
+        end
+
+        local function better_blade_handle_tool(tool)
+            if not cheat_client.config.better_blade_enabled
+                or not tool
+                or not tool:IsA("Tool")
+            then
+                return
+            end
+
+            local spell_name = tool.Name
+            if spell_name ~= "Verto" and spell_name ~= "Vulnere" then
+                return
+            end
+
+            -- The WeaponUI may be created/repopulated in the same equip frame. Try now,
+            -- then one tiny deferred retry only if the first attempt could not find it.
+            if not better_blade_press_for(spell_name) then
+                task.delay(0.05, function()
+                    if shared and shared.is_unloading then
+                        return
+                    end
+                    local character = plr.Character
+                    if character and tool.Parent == character then
+                        better_blade_press_for(spell_name)
+                    end
+                end)
+            end
+        end
+
+        local function better_blade_bind_character(character)
+            if better_blade_character_connection then
+                better_blade_character_connection:Disconnect()
+                better_blade_character_connection = nil
+            end
+
+            if not character then
+                return
+            end
+
+            better_blade_character_connection = character.ChildAdded:Connect(better_blade_handle_tool)
+
+            for _, child in ipairs(character:GetChildren()) do
+                if child:IsA("Tool") and (child.Name == "Verto" or child.Name == "Vulnere") then
+                    task.defer(better_blade_handle_tool, child)
+                    break
+                end
+            end
+        end
+
+        local function better_blade_bind_weapon_ui()
+            if better_blade_mainframe_connection then
+                better_blade_mainframe_connection:Disconnect()
+                better_blade_mainframe_connection = nil
+            end
+
+            local main_frame = better_blade_get_mainframe()
+            if not main_frame then
+                return
+            end
+
+            better_blade_refresh_buttons()
+            better_blade_mainframe_connection = main_frame.ChildAdded:Connect(function(child)
+                if child:IsA("TextButton") then
+                    task.defer(better_blade_bind_button, child)
+                end
+            end)
+
+            -- If WeaponUI appeared after the spell was already equipped, select now.
+            local character = plr.Character
+            if character then
+                local held_verto = FindFirstChild(character, "Verto")
+                local held_vulnere = FindFirstChild(character, "Vulnere")
+                if held_verto and held_verto:IsA("Tool") then
+                    task.defer(better_blade_press_for, "Verto")
+                elseif held_vulnere and held_vulnere:IsA("Tool") then
+                    task.defer(better_blade_press_for, "Vulnere")
+                end
+            end
+        end
+
+        function cheat_client.set_better_blade_enabled(value)
+            cheat_client.config.better_blade_enabled = value == true
+            better_blade_refresh_buttons()
+
+            if not cheat_client.config.better_blade_enabled then
+                return
+            end
+
+            -- If Better Blade is enabled while one of the spells is already held,
+            -- immediately apply that spell's configured weapon selection.
+            local character = plr.Character
+            if character then
+                local held_verto = FindFirstChild(character, "Verto")
+                local held_vulnere = FindFirstChild(character, "Vulnere")
+                if held_verto and held_verto:IsA("Tool") then
+                    task.defer(better_blade_press_for, "Verto")
+                elseif held_vulnere and held_vulnere:IsA("Tool") then
+                    task.defer(better_blade_press_for, "Vulnere")
+                end
+            end
+        end
+
+        function cheat_client.set_better_blade_weapon(spell_name, value)
+            value = tostring(value or "")
+            if spell_name == "Verto" then
+                cheat_client.config.better_blade_verto_weapon = value
+            elseif spell_name == "Vulnere" then
+                cheat_client.config.better_blade_vulnere_weapon = value
+            else
+                return
+            end
+            better_blade_refresh_buttons()
+        end
+
+        local player_gui = plr:WaitForChild("PlayerGui")
+        local better_blade_gui_connection = player_gui.ChildAdded:Connect(function(child)
+            if child.Name == "WeaponUI" then
+                task.defer(better_blade_bind_weapon_ui)
+            end
+        end)
+        local better_blade_character_added_connection = plr.CharacterAdded:Connect(better_blade_bind_character)
+
+        if plr.Character then
+            better_blade_bind_character(plr.Character)
+        end
+        better_blade_bind_weapon_ui()
+
+        if shared and shared.connections then
+            shared.connections[#shared.connections + 1] = better_blade_gui_connection
+            shared.connections[#shared.connections + 1] = better_blade_character_added_connection
+        end
+    end
 
     local friends_file = "HYDROXIDE/friends.json"
     function cheat_client:save_friends()
@@ -12580,6 +12850,53 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         cheat_client.set_battle_theme_volume(value)
                     else
                         cheat_client.config.battle_theme_volume = value
+                    end
+                end
+            })
+
+            -- Reuse this groupbox local again to keep the Combat UI function's register
+            -- footprint low while adding the two Better Blade weapon selectors.
+            group_silent_aim = Tabs.Combat:AddRightGroupbox("Better Blade")
+
+            group_silent_aim:AddToggle("BetterBlade", {
+                Text = "Better Blade",
+                Default = cheat_client.config.better_blade_enabled,
+                Tooltip = "Automatically selects the configured WeaponUI button when Verto or Vulnere is held",
+                Callback = function(value)
+                    if cheat_client.set_better_blade_enabled then
+                        cheat_client.set_better_blade_enabled(value)
+                    else
+                        cheat_client.config.better_blade_enabled = value
+                    end
+                end
+            })
+
+            group_silent_aim:AddInput("BetterBladeVertoWeapon", {
+                Text = "Verto",
+                Default = cheat_client.config.better_blade_verto_weapon or "",
+                Numeric = false,
+                Finished = false,
+                Placeholder = "Weapon name",
+                Callback = function(value)
+                    if cheat_client.set_better_blade_weapon then
+                        cheat_client.set_better_blade_weapon("Verto", value)
+                    else
+                        cheat_client.config.better_blade_verto_weapon = tostring(value or "")
+                    end
+                end
+            })
+
+            group_silent_aim:AddInput("BetterBladeVulnereWeapon", {
+                Text = "Vulnere",
+                Default = cheat_client.config.better_blade_vulnere_weapon or "",
+                Numeric = false,
+                Finished = false,
+                Placeholder = "Weapon name",
+                Callback = function(value)
+                    if cheat_client.set_better_blade_weapon then
+                        cheat_client.set_better_blade_weapon("Vulnere", value)
+                    else
+                        cheat_client.config.better_blade_vulnere_weapon = tostring(value or "")
                     end
                 end
             })
