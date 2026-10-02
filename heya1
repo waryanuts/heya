@@ -14337,6 +14337,20 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     local button = template:Clone()
                     button.Name = "HXDExtraHotbarButton" .. tostring(index)
 
+                    -- The native hotbar template can briefly carry a stale quantity badge
+                    -- (for example "x2") while BackpackClient is reconciling tool state on
+                    -- high ping. Since this is a display-only clone, never inherit that badge
+                    -- into an extended slot. Legitimate tool assignment/equip state is resolved
+                    -- from the actual Backpack/Character Tool instead.
+                    for _, descendant in ipairs(button:GetDescendants()) do
+                        if (descendant:IsA("TextLabel") or descendant:IsA("TextButton"))
+                            and tostring(descendant.Text or ""):match("^[xX]%d+$")
+                        then
+                            descendant.Text = ""
+                            descendant.Visible = false
+                        end
+                    end
+
                     -- Cloned GUI objects do not clone event connections, but strip any
                     -- script descendants anyway so the visual is entirely display-only.
                     for _, descendant in ipairs(button:GetDescendants()) do
