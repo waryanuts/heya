@@ -37795,6 +37795,7 @@ end
                                 {position = Vector3.new(1740.5, 157.5, 849), radius = 44, name = "Basement Bookshelves", image = "https://i.imgur.com/qPySkxj.png"},
                                 {position = Vector3.new(-143.446, 208.010, 2484.522), radius = 22, name = "Side Hut", image = "https://i.imgur.com/R8kIw03.png"},
                                 {position = Vector3.new(1206.355, 224.368, -3308.123), radius = 25, name = "Sunken Entrance Pillar", image = "https://i.imgur.com/NQpVIqY.png"},
+                                {position = Vector3.new(-1138.242, 460.364, 993.608), radius = 25, name = "Burial Entrance", image = "https://i.imgur.com/WriO72a.png"},
 
 
 
