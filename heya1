@@ -10012,6 +10012,17 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     gate_timer = 8.4,
                     nofall_cooldown = 7.15,
                 },
+
+                -- Celeritas: RightClick/M2 arms a 2.5-second confirmation window.
+                -- A newly-added TPSafe inside that window confirms the cast and
+                -- starts a 4.3-second shared Snap cooldown.
+                Celeritas = {
+                    name = "Celeritas",
+                    special = "instance_window",
+                    trigger_instance = "TPSafe",
+                    confirmation_window = 2.5,
+                    shared_cooldown = 4.3,
+                },
             }
 
             local SNAP_OVERLAY_NAME = "SnapCooldownVisualizerOverlay"
@@ -10177,9 +10188,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return false
                 end
 
-                -- For now, only Snaps that have an explicit detector profile get the
-                -- shared blue overlay. This keeps the visual limited to Gelidus + Gate
-                -- until more Snap activation rules are added.
+                -- Only Snaps that have an explicit detector profile get the shared
+                -- blue overlay. Registered profiles currently include Gelidus, Gate,
+                -- and Celeritas.
                 local player_gui = plr:FindFirstChild("PlayerGui")
                 local backpack_gui = player_gui and FindFirstChild(player_gui, "BackpackGui")
                 local main_frame = backpack_gui and FindFirstChild(backpack_gui, "MainFrame")
@@ -10460,6 +10471,20 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             resolve_gate_success(profile, token)
                         end
                     end
+
+                elseif profile.special == "instance_window" then
+                    local elapsed = os.clock() - snap_state.pending_at
+                    local window = profile.confirmation_window or 0
+
+                    if elapsed >= 0
+                        and elapsed <= window
+                        and object.Name == profile.trigger_instance
+                    then
+                        finish_pending_with_shared_cooldown(
+                            token,
+                            profile.shared_cooldown
+                        )
+                    end
                 end
             end
 
@@ -10519,9 +10544,24 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 elseif profile.special == "gate_nofall" then
                     wanted_names[profile.active_cast_instance] = true
                     wanted_names[profile.nofall_instance] = true
+                elseif profile.special == "instance_window" then
+                    wanted_names[profile.trigger_instance] = true
                 end
 
                 snap_state.baseline = snapshot_instances(plr.Character, wanted_names)
+
+                if profile.special == "instance_window" then
+                    local token = snap_state.pending_token
+                    local window = profile.confirmation_window or 0
+
+                    task.delay(window, function()
+                        if snap_state.pending_token == token
+                            and snap_state.pending_name == profile.name
+                        then
+                            clear_pending()
+                        end
+                    end)
+                end
             end
 
             local function reset_all()
