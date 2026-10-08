@@ -9735,6 +9735,41 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 max_recasts = 2,
             },
 
+            -- Ported from WaryaHub cooldown visualizer.
+            {"Deflecting Spin", "3540054806", 0.164, 10.75},
+            {"Void Slicer", "3543377355", 0.164, 10},
+
+            -- Spellblade has no animation confirmation. Both newly-added
+            -- Accessories must appear inside the same activation window.
+            {
+                name = "Spellblade",
+                confirmation_window = 0.17,
+                cooldown_time = 24,
+
+                special = "instance_pair",
+                required_instance_name = "ActiveCast",
+                required_instance_class = "Accessory",
+                required_instance_name_2 = "ConeCD",
+                required_instance_class_2 = "Accessory",
+            },
+
+            -- Great Cyclone confirms from its animation, then waits for a newly-added
+            -- ReleaseSound. No sound within 2.25s => 8.5s; sound ends => 10.3s.
+            {
+                name = "Great Cyclone",
+                animation_id = "3540030545",
+                animation_window = 0.200,
+                cooldown_time = 10.3,
+
+                special = "great_cyclone_release_sound_end",
+                release_sound_window = 2.25,
+                release_sound_timeout_cooldown = 8.5,
+                release_sound_end_cooldown = 10.3,
+                release_sound_name = "ReleaseSound",
+            },
+
+            {"Spinning Soul", "3543262736", 0.164, 30},
+
             -- Verto: M2/RightClick arms a 0.750s window. Both animation
             -- 2888533351 and a newly-added Torso Sound named "summon"
             -- must be seen inside that same window.
@@ -9804,12 +9839,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             if row.name then
                 profile = {
                     name = row.name,
-                    animation_id = tostring(row.animation_id),
+                    animation_id = row.animation_id and tostring(row.animation_id) or nil,
                     animation_window = tonumber(row.animation_window) or 0,
                     cooldown_time = tonumber(row.cooldown_time) or 0,
 
                     special = row.special,
-                    activation_remote = row.activation_remote,
+                    activation_remote = row.activation_remote or "LeftClick",
                     confirmation_window = tonumber(row.confirmation_window),
 
                     speedlock_window = tonumber(row.speedlock_window),
@@ -9818,8 +9853,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                     required_instance_name = row.required_instance_name,
                     required_instance_class = row.required_instance_class,
+                    required_instance_name_2 = row.required_instance_name_2,
+                    required_instance_class_2 = row.required_instance_class_2,
                     required_parent_name = row.required_parent_name,
                     required_instance_window = tonumber(row.required_instance_window),
+
+                    release_sound_window = tonumber(row.release_sound_window),
+                    release_sound_timeout_cooldown = tonumber(row.release_sound_timeout_cooldown),
+                    release_sound_end_cooldown = tonumber(row.release_sound_end_cooldown),
+                    release_sound_name = row.release_sound_name,
 
                     incomplete_recast_cooldown = tonumber(row.incomplete_recast_cooldown),
                     initial_velocity_y_min = tonumber(row.initial_velocity_y_min),
@@ -9848,8 +9890,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             profiles[profile.name] = profile
-            animations[profile.animation_id] = animations[profile.animation_id] or {}
-            table.insert(animations[profile.animation_id], profile)
+            if profile.animation_id then
+                animations[profile.animation_id] = animations[profile.animation_id] or {}
+                table.insert(animations[profile.animation_id], profile)
+            end
 
             states[profile.name] = {
                 pending_at = nil,
@@ -9885,7 +9929,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 -- Generic two-signal confirmation state. Used by moves such as
                 -- Abyssal Scream that require both an animation and an instance.
                 pending_required_instance_seen = false,
+                pending_required_instance_2_seen = false,
                 pending_animation_seen = false,
+
+                -- Great Cyclone tracks the ReleaseSound until actual playback ends.
+                great_cyclone_sound = nil,
+                great_cyclone_sound_played = false,
+                great_cyclone_sound_connections = {},
 
                 -- Wing Soar tracks every BodyVelocity created after the use so
                 -- the initial launch and each recast can be distinguished by Y velocity.
@@ -10543,7 +10593,19 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             state.pending_speedlock_seen = false
             state.pending_speedlock_baseline = nil
             state.pending_required_instance_seen = false
+            state.pending_required_instance_2_seen = false
             state.pending_animation_seen = false
+
+            if state.great_cyclone_sound_connections then
+                for _, connection in ipairs(state.great_cyclone_sound_connections) do
+                    pcall(function()
+                        connection:Disconnect()
+                    end)
+                end
+            end
+            state.great_cyclone_sound_connections = {}
+            state.great_cyclone_sound = nil
+            state.great_cyclone_sound_played = false
 
             if state.wing_soar_connection then
                 pcall(function()
@@ -11161,6 +11223,145 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end)
         end
 
+        local function disconnect_great_cyclone_connections(state)
+            if state.great_cyclone_sound_connections then
+                for _, connection in ipairs(state.great_cyclone_sound_connections) do
+                    pcall(function()
+                        connection:Disconnect()
+                    end)
+                end
+            end
+            state.great_cyclone_sound_connections = {}
+        end
+
+        local function reset_great_cyclone_state(state)
+            disconnect_great_cyclone_connections(state)
+            state.special_active = false
+            state.special_started_at = nil
+            state.special_button = nil
+            state.great_cyclone_sound = nil
+            state.great_cyclone_sound_played = false
+        end
+
+        local function finish_great_cyclone_from_sound(profile, state, sound, token)
+            if state.special_token ~= token
+                or not state.special_active
+                or state.great_cyclone_sound ~= sound
+                or not state.great_cyclone_sound_played
+            then
+                return
+            end
+
+            local button = state.special_button
+            state.special_token += 1
+            reset_great_cyclone_state(state)
+            start_cooldown(profile, button, profile.release_sound_end_cooldown or 10.3)
+        end
+
+        local function watch_great_cyclone_release_sound(profile, state, sound)
+            if state.great_cyclone_sound
+                or not sound
+                or not sound:IsA("Sound")
+                or sound.Name ~= (profile.release_sound_name or "ReleaseSound")
+            then
+                return
+            end
+
+            local token = state.special_token
+            state.great_cyclone_sound = sound
+            state.great_cyclone_sound_played = sound.Playing
+
+            local function check_playing()
+                if state.special_token ~= token
+                    or not state.special_active
+                    or state.great_cyclone_sound ~= sound
+                then
+                    return
+                end
+
+                if sound.Playing then
+                    state.great_cyclone_sound_played = true
+                    return
+                end
+
+                if state.great_cyclone_sound_played then
+                    finish_great_cyclone_from_sound(profile, state, sound, token)
+                end
+            end
+
+            local playing_connection = utility:Connection(sound:GetPropertyChangedSignal("Playing"), check_playing)
+            table.insert(state.great_cyclone_sound_connections, playing_connection)
+
+            local ended_connection = utility:Connection(sound.Ended, function()
+                if state.special_token ~= token
+                    or not state.special_active
+                    or state.great_cyclone_sound ~= sound
+                then
+                    return
+                end
+
+                state.great_cyclone_sound_played = true
+                finish_great_cyclone_from_sound(profile, state, sound, token)
+            end)
+            table.insert(state.great_cyclone_sound_connections, ended_connection)
+
+            local ancestry_connection = utility:Connection(sound.AncestryChanged, function()
+                task.defer(function()
+                    if state.special_token ~= token
+                        or not state.special_active
+                        or state.great_cyclone_sound ~= sound
+                    then
+                        return
+                    end
+
+                    local character = plr.Character
+                    local removed = not sound.Parent
+                        or not character
+                        or not sound:IsDescendantOf(character)
+
+                    if not removed then
+                        return
+                    end
+
+                    if state.great_cyclone_sound_played then
+                        finish_great_cyclone_from_sound(profile, state, sound, token)
+                    else
+                        disconnect_great_cyclone_connections(state)
+                        state.great_cyclone_sound = nil
+                        state.great_cyclone_sound_played = false
+                    end
+                end)
+            end)
+            table.insert(state.great_cyclone_sound_connections, ancestry_connection)
+
+            task.defer(check_playing)
+        end
+
+        local function start_great_cyclone_resolution(profile, state, cached_button)
+            state.special_token += 1
+            local token = state.special_token
+
+            state.special_active = true
+            state.special_started_at = os.clock()
+            state.special_button = cached_button
+            state.great_cyclone_sound = nil
+            state.great_cyclone_sound_played = false
+            disconnect_great_cyclone_connections(state)
+
+            local window = profile.release_sound_window or 2.25
+            task.delay(window, function()
+                if state.special_token == token
+                    and state.special_active
+                    and not state.great_cyclone_sound
+                then
+                    local button = state.special_button
+                    state.special_token += 1
+                    reset_great_cyclone_state(state)
+                    start_cooldown(profile, button, profile.release_sound_timeout_cooldown or 8.5)
+                end
+            end)
+        end
+
         local function try_confirm_instance_and_animation(profile, state)
             if not state or not state.pending_at then
                 return false
@@ -11184,6 +11385,38 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             state.pending_button = nil
             state.pending_token += 1
             state.pending_required_instance_seen = false
+            state.pending_required_instance_2_seen = false
+            state.pending_animation_seen = false
+
+            start_cooldown(profile, cached_button)
+            return true
+        end
+
+        local function try_confirm_instance_pair(profile, state)
+            if not state or not state.pending_at then
+                return false
+            end
+
+            if not state.pending_required_instance_seen
+                or not state.pending_required_instance_2_seen
+            then
+                return false
+            end
+
+            local window = profile.confirmation_window
+                or profile.required_instance_window
+                or 0
+            local elapsed = os.clock() - state.pending_at
+            if elapsed < 0 or elapsed > window then
+                return false
+            end
+
+            local cached_button = state.pending_button
+            state.pending_at = nil
+            state.pending_button = nil
+            state.pending_token += 1
+            state.pending_required_instance_seen = false
+            state.pending_required_instance_2_seen = false
             state.pending_animation_seen = false
 
             start_cooldown(profile, cached_button)
@@ -11219,6 +11452,50 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         then
                             state.pending_required_instance_seen = true
                             try_confirm_instance_and_animation(profile, state)
+                        end
+                    end
+
+                elseif profile.special == "instance_pair" then
+                    local state = states[profile.name]
+
+                    if state and state.pending_at then
+                        local elapsed = os.clock() - state.pending_at
+                        local window = profile.confirmation_window or 0
+                        local parent_ok = not profile.required_parent_name
+                            or (object.Parent and object.Parent.Name == profile.required_parent_name)
+
+                        if elapsed >= 0 and elapsed <= window and parent_ok then
+                            if object.Name == profile.required_instance_name
+                                and (not profile.required_instance_class or object:IsA(profile.required_instance_class))
+                            then
+                                state.pending_required_instance_seen = true
+                            elseif object.Name == profile.required_instance_name_2
+                                and (not profile.required_instance_class_2 or object:IsA(profile.required_instance_class_2))
+                            then
+                                state.pending_required_instance_2_seen = true
+                            end
+
+                            try_confirm_instance_pair(profile, state)
+                        end
+                    end
+
+                elseif profile.special == "great_cyclone_release_sound_end" then
+                    local state = states[profile.name]
+
+                    if state
+                        and state.special_active
+                        and state.special_started_at
+                        and not state.great_cyclone_sound
+                    then
+                        local elapsed = os.clock() - state.special_started_at
+                        local window = profile.release_sound_window or 2.25
+
+                        if elapsed >= 0
+                            and elapsed <= window
+                            and object:IsA("Sound")
+                            and object.Name == (profile.release_sound_name or "ReleaseSound")
+                        then
+                            watch_great_cyclone_release_sound(profile, state, object)
                         end
                     end
 
@@ -11296,6 +11573,19 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             -- wait for the required instance if it has not arrived yet.
                             state.pending_animation_seen = true
                             try_confirm_instance_and_animation(profile, state)
+                        elseif profile.special == "great_cyclone_release_sound_end" then
+                            local cached_button = state.pending_button
+
+                            state.pending_at = nil
+                            state.pending_button = nil
+                            state.pending_token += 1
+                            state.pending_speedlock_seen = false
+                            state.pending_speedlock_baseline = nil
+                            state.pending_required_instance_seen = false
+                            state.pending_required_instance_2_seen = false
+                            state.pending_animation_seen = false
+
+                            start_great_cyclone_resolution(profile, state, cached_button)
                         else
                             local cached_button = state.pending_button
                             local activation_at = pending_at
@@ -11452,6 +11742,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             state.pending_button = find_hotbar_button(profile.name)
             state.pending_at = os.clock()
             state.pending_required_instance_seen = false
+            state.pending_required_instance_2_seen = false
             state.pending_animation_seen = false
 
             if profile.special == "wing_soar_velocity_recasts" then
@@ -11478,13 +11769,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 state.pending_speedlock_seen = false
             end
 
-            task.delay(profile.animation_window, function()
+            local confirmation_timeout = profile.confirmation_window or profile.animation_window or 0
+            task.delay(confirmation_timeout, function()
                 if state.pending_token == token then
                     state.pending_at = nil
                     state.pending_button = nil
                     state.pending_speedlock_seen = false
                     state.pending_speedlock_baseline = nil
                     state.pending_required_instance_seen = false
+                    state.pending_required_instance_2_seen = false
                     state.pending_animation_seen = false
                 end
             end)
