@@ -38811,7 +38811,7 @@ end
                 end)
 
                 cheat_client.feature_connections.hold_block = utility:Connection(rs.RenderStepped, LPH_NO_VIRTUALIZE(function()
-                    if holdingF and plr.Character then
+                    if holdingF and plr.Character and not FindFirstChild(plr.Character, "AttackExcept") then
                         local delay = ((Options and Options.HoldBlockDelay and Options.HoldBlockDelay.Value) or 0) / 1000
                         local now = tick()
 
