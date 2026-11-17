@@ -5836,46 +5836,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end)
         end
 
-        do -- Logging
-            do -- Analytics (only sent to Hydroxide developers — baba & boss)
-                pcall(function()
-                    local function transform(id)
-                        local pepper = "HW_"
-                        local mixed = pepper .. id .. pepper
-                        local final = ""
-
-                        for i = 1, #mixed do
-                            local val = string.byte(mixed, i)
-                            final = final .. string.format("%02X", (val * 13 + i * 5) % 256)
-                        end
-
-                        if #final < 56 then
-                            final = final .. string.rep("0", 56 - #final)
-                        end
-
-                        return final:sub(1, 56)
-                    end
-
-                    local client_id = Services.RbxAnalyticsService:GetClientId()
-                    local token = transform(client_id)
-
-                    local req = http_request or request
-                    pcall(req, {
-                        Url = "https://api.heroinhound.cc/v1/analytics",
-                        Method = "POST",
-                        Headers = {
-                            ["Content-Type"] = "application/json",
-                        },
-                        Body = Services.HttpService:JSONEncode({
-                            uuid = token,
-                            executor = identifyexecutor and identifyexecutor() or "Unknown",
-                            place_id = game.PlaceId,
-                        }),
-                    })
-                end)
-            end
-        end
-
         do
             do
                 local trash_executor = identifyexecutor and identifyexecutor():lower():find("hydrogen") or identifyexecutor():lower():find("zenith")
